@@ -23,8 +23,22 @@ depending on the Git integration noticing the bot's commit.
 4. Optionally set the repository Actions variable **BENCHMARK_DASHBOARD_URL**.
    The default is `https://www.nexus-index.com`. This must be the public production
    domain, not a protected preview URL.
+5. When Cloudflare crawler protection blocks GitHub-hosted runners, set
+   **BENCHMARK_VERIFICATION_URL** to the stable Vercel production alias
+   `https://nexus-score-aadivars-projects.vercel.app`. Keep the dashboard URL
+   pointing to the public custom domain.
+6. In Vercel Settings → Deployment Protection → Trusted Sources → External
+   Services, authorize GitHub Actions for **production** with these exact claims:
+   issuer `https://token.actions.githubusercontent.com`, audience
+   `https://github.com/Annexis`, repository `Annexis/nexus-score`, ref
+   `refs/heads/main`, and workflow `Update Leaderboard` (the YAML workflow name).
+   The workflow sends a masked, short-lived identity token to the production
+   verification alias. It does not follow redirects with this token.
 
-No Vercel account token is needed in GitHub Actions. Runs are serialized, and
+This [Trusted Sources](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources)
+configuration authenticates CI without adding a persistent verification secret
+or changing the public crawler rules. No Vercel account token is needed in GitHub
+Actions. Runs are serialized, and
 manual runs from a branch other than the default branch are skipped.
 
 ## Retry and verification
