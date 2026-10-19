@@ -82,6 +82,29 @@ test('missing deployment configuration fails before making a request', async () 
   await assert.rejects(deployBenchmark({ dashboardUrl: 'https://example.com', snapshots }), /VERCEL_DEPLOY_HOOK is required/);
 });
 
+test('sends CI identity only to the configured production verification origin', async (t) => {
+  const { base } = await serverFor(t, (request, response) => {
+    if (request.url === '/hook') {
+      assert.equal(request.headers['x-vercel-trusted-oidc-idp-token'], undefined);
+      return response.end(JSON.stringify({ job: { id: 'deployment' } }));
+    }
+    assert.equal(request.headers['x-vercel-trusted-oidc-idp-token'], 'short-lived-test-token');
+    const era = new URL(request.url, 'http://localhost').searchParams.get('era');
+    response.end(JSON.stringify(liveResponse(era)));
+  });
+  await deployBenchmark({ hook: `${base}/hook`, dashboardUrl: 'https://public.example.com', verificationUrl: base, oidcToken: 'short-lived-test-token', snapshots, timeoutMs: 2000, log() {} });
+});
+
+test('refuses to forward CI identity to a redirected origin', async (t) => {
+  const { base, requests } = await serverFor(t, (request, response) => {
+    if (request.url === '/hook') return response.end(JSON.stringify({ job: { id: 'deployment' } }));
+    response.writeHead(302, { Location: `${base}/redirect-target` });
+    response.end();
+  });
+  await assert.rejects(deployBenchmark({ hook: `${base}/hook`, dashboardUrl: base, oidcToken: 'short-lived-test-token', snapshots, timeoutMs: 100, intervalMs: 1, log() {} }), /did not publish/);
+  assert.ok(requests.every((request) => request.url !== '/redirect-target'));
+});
+
 test('validates both saved snapshots before deployment', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'benchmark-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

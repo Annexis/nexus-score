@@ -23,6 +23,8 @@ export function readSnapshots(directory) {
 export async function deployBenchmark({
   hook,
   dashboardUrl,
+  verificationUrl = dashboardUrl,
+  oidcToken,
   snapshots,
   timeoutMs = 10 * 60 * 1000,
   intervalMs = 10 * 1000,
@@ -30,7 +32,8 @@ export async function deployBenchmark({
 }) {
   if (!hook) throw new Error('VERCEL_DEPLOY_HOOK is required. See docs/benchmark-automation.md.');
   const dashboard = new URL(dashboardUrl);
-  if (!['https:', 'http:'].includes(dashboard.protocol)) throw new Error('Invalid dashboard URL.');
+  const verification = new URL(verificationUrl);
+  if (![dashboard, verification].every((url) => ['https:', 'http:'].includes(url.protocol))) throw new Error('Invalid dashboard URL.');
 
   // Do not log the hook URL or response body: the URL is a deployment credential.
   let deployment;
@@ -49,13 +52,13 @@ export async function deployBenchmark({
   if (!result.job?.id || ['ERROR', 'CANCELED'].includes(result.job.state)) {
     throw new Error('Vercel did not accept the deployment job.');
   }
-  log(`Deployment requested (${result.job.id}). Waiting for both benchmark eras on ${dashboard.origin}.`);
+  log(`Deployment requested (${result.job.id}). Waiting for both benchmark eras on ${verification.origin}.`);
 
   const deadline = Date.now() + timeoutMs;
   let status = 'No dashboard response yet.';
   while (Date.now() < deadline) {
     const results = await Promise.all(snapshots.map(async (expected) => {
-      const url = new URL('/api/leaderboard', dashboard);
+      const url = new URL('/api/leaderboard', verification);
       url.searchParams.set('era', expected.era);
       url.searchParams.set('contentType', 'all');
       url.searchParams.set('limit', '1');
@@ -63,7 +66,12 @@ export async function deployBenchmark({
       url.searchParams.set('_snapshot', `${expected.generatedAt}-${Date.now()}`);
       try {
         const response = await fetch(url, {
-          headers: { 'Cache-Control': 'no-cache' },
+          headers: {
+            'Cache-Control': 'no-cache',
+            ...(oidcToken ? { 'x-vercel-trusted-oidc-idp-token': oidcToken } : {}),
+          },
+          // Never forward the verification identity through a domain redirect.
+          redirect: 'error',
           signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, deadline - Date.now()))),
         });
         if (!response.ok) return { matches: false, status: `${expected.era}: HTTP ${response.status}` };
@@ -87,7 +95,13 @@ export async function deployBenchmark({
 async function main() {
   const snapshots = readSnapshots(join(dirname(scriptPath), '..', 'data'));
   const dashboardUrl = process.env.BENCHMARK_DASHBOARD_URL || 'https://www.nexus-index.com';
-  await deployBenchmark({ hook: process.env.VERCEL_DEPLOY_HOOK, dashboardUrl, snapshots });
+  await deployBenchmark({
+    hook: process.env.VERCEL_DEPLOY_HOOK,
+    dashboardUrl,
+    verificationUrl: process.env.BENCHMARK_VERIFICATION_URL || dashboardUrl,
+    oidcToken: process.env.VERCEL_OIDC_TOKEN,
+    snapshots,
+  });
   const summary = [
     '## Benchmark dashboard updated',
     '',
@@ -95,7 +109,7 @@ async function main() {
     '',
     ...snapshots.map((snapshot) => `- ${snapshot.era}: ${snapshot.generatedAt}; ${snapshot.count.toLocaleString('en-US')} publishers`),
     '',
-    'Both public API snapshots match the committed data.',
+    'Both production API snapshots match the committed data.',
     '',
   ].join('\n');
   console.log(summary);
