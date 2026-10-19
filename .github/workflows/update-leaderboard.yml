@@ -1,31 +1,50 @@
 name: Update Leaderboard
 
 on:
-  # Run biweekly - every other Monday at 6 AM UTC
+  # Run on the 1st and 15th of each month at 6 AM UTC
   schedule:
     - cron: '0 6 1,15 * *'  # 1st and 15th of each month at 6 AM UTC
 
   # Allow manual trigger
   workflow_dispatch:
+    inputs:
+      refresh_data:
+        description: Fetch fresh Crossref data (disable to redeploy the saved snapshot)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
+concurrency:
+  group: update-benchmark-dashboard
+  cancel-in-progress: false
+
 jobs:
   update-leaderboard:
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Check dashboard deployment configuration
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$VERCEL_DEPLOY_HOOK" ]; then
+            echo "::error::Set VERCEL_DEPLOY_HOOK to the production project's main-branch deploy hook. See docs/benchmark-automation.md."
+            exit 1
+          fi
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 10
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,12 +53,16 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test dashboard deployment checks
+        run: node --test apps/web/scripts/deploy-benchmark.test.mjs
 
       - name: Build core package
         run: pnpm --filter @nexus-score/core build
 
       - name: Generate leaderboard
+        if: github.event_name == 'schedule' || inputs.refresh_data
         run: pnpm --filter @nexus-score/web generate-leaderboard
         env:
           CROSSREF_MAILTO: ${{ secrets.CROSSREF_MAILTO || 'varma2friend@gmail.com' }}
@@ -47,7 +70,9 @@ jobs:
       - name: Check for changes
         id: git-check
         run: |
-          git diff --exit-code apps/web/data/leaderboard.json apps/web/data/current-leaderboard.json || echo "changed=true" >> $GITHUB_OUTPUT
+          if ! git diff --quiet -- apps/web/data/leaderboard.json apps/web/data/current-leaderboard.json; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Commit and push changes
         if: steps.git-check.outputs.changed == 'true'
@@ -56,4 +81,14 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add apps/web/data/leaderboard.json apps/web/data/current-leaderboard.json
           git commit -m "chore: update leaderboard data $(date +'%Y-%m-%d')"
-          git push
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      # A data commit alone does not guarantee a production deployment.
+      # Always deploy, including retries where the snapshot is already committed.
+      - name: Deploy and verify benchmark dashboard
+        timeout-minutes: 12
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+          BENCHMARK_DASHBOARD_URL: ${{ vars.BENCHMARK_DASHBOARD_URL || 'https://www.nexus-index.com' }}
+        run: node apps/web/scripts/deploy-benchmark.mjs
