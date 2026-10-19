@@ -34,8 +34,8 @@ export interface MetricWeight {
 
 export const PROVENANCE_METRICS: MetricWeight[] = [
   { name: 'References', key: 'references-current', weight: 15 },
-  { name: 'Update Policies', key: 'update-policies-current', weight: 5 },
-  { name: 'Similarity Check', key: 'similarity-checking-current', weight: 5 },
+  { name: 'Crossmark metadata', key: 'update-policies-current', weight: 5 },
+  { name: 'Similarity Check URLs', key: 'similarity-checking-current', weight: 5 },
 ];
 
 export const PEOPLE_METRICS: MetricWeight[] = [
@@ -44,11 +44,11 @@ export const PEOPLE_METRICS: MetricWeight[] = [
 
 export const ORGANIZATIONS_METRICS: MetricWeight[] = [
   { name: 'Affiliations (Text)', key: 'affiliations-current', weight: 5 },
-  { name: 'ROR IDs', key: 'ror-ids-current', weight: 10 },
+  { name: 'Affiliation ROR IDs', key: 'affiliation-ror-ids-current', weight: 10 },
 ];
 
 export const FUNDING_METRICS: MetricWeight[] = [
-  { name: 'Funder Registry', key: 'funders-current', weight: 10 },
+  { name: 'Funding metadata', key: 'funders-current', weight: 10 },
   { name: 'Award Numbers', key: 'award-numbers-current', weight: 10 },
 ];
 

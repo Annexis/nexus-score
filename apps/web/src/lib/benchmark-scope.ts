@@ -29,8 +29,7 @@ export function buildMemberHref(memberId: number | string, scope: BenchmarkScope
 }
 
 export function buildLeaderboardHref(scope: BenchmarkScope): string {
-  const params = new URLSearchParams({ era: scope.era });
-  if (scope.contentType !== 'all') params.set('contentType', scope.contentType);
+  const params = new URLSearchParams({ era: scope.era, contentType: scope.contentType });
   return `/leaderboard?${params.toString()}`;
 }
 

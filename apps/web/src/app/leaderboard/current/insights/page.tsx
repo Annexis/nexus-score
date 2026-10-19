@@ -1,482 +1,144 @@
-import { Metadata } from 'next';
+import type { Metadata } from 'next';
 import Link from 'next/link';
+import { isScorableContentType, scopedBenchmark, summarizeBenchmark, compareBenchmarkEras, type BenchmarkDimensions } from '@nexus-score/core';
+import { getBenchmarkSnapshots } from '@/lib/benchmark-data';
+import { buildLeaderboardHref, buildMemberHref, formatDataDate } from '@/lib/benchmark-scope';
+import { InsightsContentTypeFilter } from '@/components/insights-content-type-filter';
 
 export const metadata: Metadata = {
-  title: 'Current Benchmark Insights - Nexus-Index',
-  description:
-    'Contextual findings from the current-era Crossref metadata health benchmark.',
+  title: 'Benchmark Insights - Nexus-Index',
+  description: 'Snapshot-derived findings about Crossref metadata coverage, with explicit content types, populations, and dates.',
 };
 
-export default function CurrentEraInsightsPage() {
+const dimensions: { key: keyof BenchmarkDimensions; label: string; color: string; measures: string; href: string }[] = [
+  { key: 'provenance', label: 'Provenance', color: 'bg-blue-500', measures: 'References, Crossmark metadata, Similarity Check URLs', href: 'https://www.crossref.org/documentation/reports/participation-reports/' },
+  { key: 'people', label: 'People', color: 'bg-green-500', measures: 'ORCID coverage; institutional authors cannot hold an ORCID', href: 'https://www.crossref.org/documentation/register-maintain-records/persistent-identifiers/orcid-ids/' },
+  { key: 'organizations', label: 'Organizations', color: 'bg-purple-500', measures: 'Affiliation text and affiliation-specific ROR IDs', href: 'https://www.crossref.org/documentation/schema-library/markup-guide-metadata-segments/affiliations/' },
+  { key: 'funding', label: 'Funding', color: 'bg-yellow-500', measures: 'Funding information and award numbers recorded in Crossref', href: 'https://www.crossref.org/documentation/funder-registry/funding-data-overview/' },
+  { key: 'access', label: 'Access', color: 'bg-red-500', measures: 'Licenses, full-text links, abstracts; this is not an open-access measure', href: 'https://www.crossref.org/documentation/reports/participation-reports/' },
+];
+const number = (value: number) => value.toLocaleString('en-GB');
+const index = (value: number | null) => value === null ? 'Not available' : value.toFixed(1);
+const bands = { A: '80–100', B: '65–79', C: '50–64', D: '35–49', F: '0–34' };
+const threshold = 10;
+
+export default async function BenchmarkInsightsPage({ searchParams }: {
+  searchParams: Promise<{ contentType?: string | string[] }>;
+}) {
+  const query = await searchParams;
+  const pair = getBenchmarkSnapshots();
+  if (!pair) return (
+    <main className="mx-auto max-w-4xl px-4 py-12">
+      <h1 className="text-3xl font-bold text-gray-900">Benchmark Insights</h1>
+      <p className="mt-4 text-gray-600">Compatible benchmark snapshots are not available. Insights will return after both eras are regenerated with the current methodology.</p>
+      <Link href="/leaderboard" className="mt-4 inline-block text-blue-700 underline">Open Benchmark Explorer</Link>
+    </main>
+  );
+  const available = pair.overall.availableContentTypes.filter((type) => isScorableContentType(type.type));
+  const defaultType = available.some((type) => type.type === 'journal-article') ? 'journal-article' : available[0]?.type ?? 'all';
+  const requested = typeof query.contentType === 'string' ? query.contentType : defaultType;
+  const contentType = requested === 'all' || available.some((type) => type.type === requested) ? requested : defaultType;
+  const scopeLabel = contentType === 'all' ? 'All Benchmarked Content Types' : available.find((type) => type.type === contentType)?.label ?? 'Journal Articles';
+  const overallRows = scopedBenchmark(pair.overall, contentType);
+  const currentRows = scopedBenchmark(pair.current, contentType);
+  const overall = summarizeBenchmark(overallRows);
+  const current = summarizeBenchmark(currentRows);
+  const byId = new Map(overallRows.map((row) => [row.id, row]));
+  const matched = compareBenchmarkEras(overallRows, currentRows, threshold);
+  const { higher, lower } = matched;
+  const examples = currentRows.filter((row) => [4374, 16, 235, 1968, 78, 311, 286, 179].includes(row.id));
+  const typeComparisons = available.map((type) => ({ ...type, summary: summarizeBenchmark(scopedBenchmark(pair.current, type.type)) }))
+    .filter((type) => type.summary.count > 0).sort((a, b) => b.summary.count - a.summary.count);
+  const period = `${pair.current.currentStart}–${pair.current.currentEnd}`;
+  const explorer = (era: 'overall' | 'current') => buildLeaderboardHref({ era, contentType });
+
   return (
-    <div className="min-h-screen py-8">
-      <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-8">
-          <Link
-            href="/leaderboard?era=current"
-            className="inline-flex items-center gap-1 text-sm text-emerald-600 hover:text-emerald-800"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11 17l-5-5m0 0l5-5m-5 5h12" />
-            </svg>
-            Back to Benchmark Explorer
-          </Link>
-          <h1 className="mt-3 text-3xl font-bold text-gray-900">
-            Benchmark Insights
-          </h1>
-          <p className="mt-2 text-gray-600">
-            Three lenses on the same data — each tells a different story
-          </p>
-          <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">
-                  Known Issues
-                </p>
-                <p className="mt-1 text-sm text-amber-900">
-                  Gaps in the methodology are tracked openly as community feedback.
-                </p>
-              </div>
-              <a
-                href="https://github.com/aadivar/nexus-score/issues"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-sm font-semibold text-amber-800 hover:text-amber-950"
-              >
-                View GitHub Issues
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5H19.5M19.5 4.5V10.5M19.5 4.5L10.5 13.5" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.5V19.5H4.5V4.5H9.5" />
-                </svg>
-              </a>
-            </div>
-          </div>
-        </div>
+    <main className="min-h-screen py-8 sm:py-12">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+        <header className="max-w-4xl">
+          <Link href={explorer('current')} className="text-sm font-medium text-blue-700 underline">Back to Benchmark Explorer</Link>
+          <p className="mt-6 text-xs font-semibold uppercase tracking-[0.16em] text-brand-muted">Health check of publisher metadata deposited in Crossref · {formatDataDate(pair.current.generatedAt)}</p>
+          <h1 className="mt-2 text-3xl font-bold text-gray-900 sm:text-4xl">Benchmark Insights</h1>
+          <p className="mt-3 text-base leading-7 text-gray-600">A dated view of the metadata visible in Crossref. Every figure below is calculated from the same saved benchmark used by the explorer.</p>
+          <p className="mt-2 text-sm text-gray-500">Coverage describes registered metadata, not publisher quality or the quality of research.</p>
+        </header>
 
-        {/* Navigation */}
-        <nav className="mb-10 not-prose">
-          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-            <p className="mb-3 text-sm font-medium text-gray-500 uppercase tracking-wider">Jump to</p>
-            <div className="flex flex-wrap gap-2">
-              <a href="#overall-vs-current" className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100">
-                1. Overall vs Current
-              </a>
-              <a href="#by-content-type" className="rounded-full border border-purple-200 bg-purple-50 px-3 py-1.5 text-sm font-medium text-purple-700 hover:bg-purple-100">
-                2. By Content Type
-              </a>
-              <a href="#by-dimension" className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100">
-                3. By Dimension
-              </a>
-              <a href="#by-publisher-type" className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-100">
-                4. By Publisher Type
-              </a>
-            </div>
-          </div>
-        </nav>
+        <InsightsContentTypeFilter key={contentType} contentType={contentType} options={available} explorerHref={explorer('current')} />
+        <p className="mt-3 text-sm text-gray-600"><strong>{scopeLabel}</strong> · Current: publications issued in {period} · Overall: all years. Backfile is before {pair.current.currentStart}.</p>
+        <p className="mt-1 text-xs text-gray-500">Source: Crossref /members · methodology {pair.current.methodologyVersion}. Snapshot dates reflect collection, not the publication date or the last metadata deposit.</p>
 
-        <article className="prose prose-gray max-w-none">
+        <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="Current benchmark summary">
+          {[
+            ['Publishers in Current', number(current.count), `${number(overall.count)} publishers in Overall`],
+            ['Average current index', index(current.average), 'Each publisher has equal weight'],
+            ['Median current index', index(current.median), 'The middle publisher in this scope'],
+            ['Current index 80+', number(current.distribution[0].count), `${current.count ? (100 * current.distribution[0].count / current.count).toFixed(1) : '0.0'}% of publishers in scope`],
+          ].map(([title, value, description]) => <div key={title} className="rounded-xl border bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</p><p className="mt-2 text-3xl font-bold text-brand-primary">{value}</p><p className="mt-2 text-xs text-gray-500">{description}</p></div>)}
+        </section>
 
-          {/* ======== SECTION 1: OVERALL VS CURRENT ERA ======== */}
-          <div id="overall-vs-current" className="not-prose mb-4 flex items-center gap-3">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">1</span>
-            <h2 className="text-2xl font-bold text-gray-900 m-0">Overall vs Current</h2>
-          </div>
-          <div className="rounded-lg border-l-4 border-blue-400 bg-blue-50 p-4 not-prose mb-6">
-            <p className="text-sm text-blue-800">
-              <strong>What this shows:</strong> How the picture changes when you separate Backfile records
-              and focus on deposits from the rolling Current three-year window.
-            </p>
-          </div>
-
-          <p>
-            The <Link href="/leaderboard" className="font-medium underline">overall benchmark</Link> averages
-            Current and Backfile metadata. Large catalogs often include records created before
-            modern identifier standards. The{' '}
-            <Link href="/leaderboard?era=current" className="font-medium underline">Current benchmark</Link> focuses
-            on recent deposits and offers a clearer view of current metadata workflows.
-          </p>
-
-          <div className="not-prose my-6 overflow-hidden rounded-lg border">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">Metric</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Overall</th>
-                  <th className="px-4 py-3 text-center font-medium text-blue-700">Current</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Change</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                <tr>
-                  <td className="px-4 py-3">Average index</td>
-                  <td className="px-4 py-3 text-center">19</td>
-                  <td className="px-4 py-3 text-center font-semibold text-blue-700">23</td>
-                  <td className="px-4 py-3 text-center text-emerald-600">+4</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3">Members with index 80+</td>
-                  <td className="px-4 py-3 text-center">2</td>
-                  <td className="px-4 py-3 text-center font-semibold text-blue-700">11</td>
-                  <td className="px-4 py-3 text-center text-emerald-600">+9</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3">Members with index 65–79</td>
-                  <td className="px-4 py-3 text-center">41</td>
-                  <td className="px-4 py-3 text-center font-semibold text-blue-700">251</td>
-                  <td className="px-4 py-3 text-center text-emerald-600">+210</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3">Members with index below 35</td>
-                  <td className="px-4 py-3 text-center">19,547</td>
-                  <td className="px-4 py-3 text-center font-semibold text-blue-700">17,665</td>
-                  <td className="px-4 py-3 text-center text-emerald-600">-1,882</td>
-                </tr>
+        <section className="mt-12" aria-labelledby="era-comparison">
+          <h2 id="era-comparison" className="text-2xl font-bold text-gray-900">Overall and Current, compared consistently</h2>
+          <p className="mt-3 max-w-4xl text-sm leading-6 text-gray-600">The complete Overall and Current populations differ. The table below compares the same {number(matched.count)} publishers, with {scopeLabel.toLowerCase()} coverage in both eras. Each publisher has equal weight in these summaries.</p>
+          <div className="mt-5 overflow-x-auto rounded-xl border bg-white">
+            <table className="w-full text-sm"><caption className="sr-only">Matched publisher cohort, Overall versus Current</caption>
+              <thead className="bg-gray-50 text-left text-gray-600"><tr><th className="px-5 py-3">Matched cohort</th><th className="px-5 py-3 text-right">Overall · all years</th><th className="px-5 py-3 text-right">Current · {period}</th></tr></thead>
+              <tbody className="divide-y">
+                <tr><th className="px-5 py-3 text-left font-medium">Average index</th><td className="px-5 py-3 text-right">{index(matched.overall.average)}</td><td className="px-5 py-3 text-right font-semibold text-blue-700">{index(matched.current.average)}</td></tr>
+                {matched.overall.distribution.map((band, i) => <tr key={band.grade}><th className="px-5 py-3 text-left font-medium">Index {bands[band.grade]}</th><td className="px-5 py-3 text-right">{number(band.count)}</td><td className="px-5 py-3 text-right">{number(matched.current.distribution[i].count)}</td></tr>)}
               </tbody>
             </table>
           </div>
+          <p className="mt-4 text-sm leading-6 text-gray-600"><strong>{number(higher)}</strong> publishers have a Current index at least {threshold} points above Overall; <strong>{number(lower)}</strong> are at least {threshold} points below. This is a comparison of publication eras in one snapshot, not evidence that individual publishers improved or declined over time.</p>
+          <div className="mt-4 flex flex-wrap gap-5 text-sm"><Link href={explorer('overall')} className="font-medium text-blue-700 underline">Explore Overall in this scope</Link><Link href={explorer('current')} className="font-medium text-blue-700 underline">Explore Current in this scope</Link></div>
+        </section>
 
-          <p>
-            <strong>2,844 publishers</strong> (12.4%) have meaningfully higher index values for current content than overall.
-            The industry <em>is</em> improving — it&apos;s just buried under decades of legacy metadata.
-          </p>
-
-          <h3>The Biggest Transformations</h3>
-          <p>
-            These large publishers have substantially different metadata profiles on recent work:
-          </p>
-
-          <div className="not-prose my-6 overflow-hidden rounded-lg border">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">Publisher</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-700">Current Works</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Overall</th>
-                  <th className="px-4 py-3 text-center font-medium text-blue-700">Current</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Jump</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                {[
-                  ['American Physical Society', '55K', '58', '81', '+23'],
-                  ['American Society for Microbiology', '15K', '67', '86', '+19'],
-                  ['American Chemical Society', '210K', '48', '70', '+22'],
-                  ['American Meteorological Society', '4K', '41', '66', '+25'],
-                  ['IEEE', '883K', '34', '41', '+7'],
-                  ['SAGE Publications', '234K', '48', '61', '+13'],
-                  ['BMJ', '64K', '33', '47', '+14'],
-                  ['Wolters Kluwer', '237K', '26', '35', '+9'],
-                ].map(([name, works, overall, current, jump]) => (
-                  <tr key={name}>
-                    <td className="px-4 py-3 font-medium">{name}</td>
-                    <td className="px-4 py-3 text-right text-gray-500">{works}</td>
-                    <td className="px-4 py-3 text-center text-gray-500">{overall}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-blue-700">{current}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">
-                        {jump}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <section className="mt-12" aria-labelledby="dimension-profile">
+          <h2 id="dimension-profile" className="text-2xl font-bold text-gray-900">Where the current metadata gaps are</h2>
+          <p className="mt-3 text-sm leading-6 text-gray-600">These are average dimension indices across publishers in the selected Current scope. They are not percentages of all papers with metadata, and different dimensions measure different signals.</p>
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            {dimensions.map((dimension) => <article key={dimension.key} className="rounded-xl border bg-white p-5">
+              <div className="flex items-start justify-between gap-4"><h3 className="font-semibold text-gray-900">{dimension.label}</h3><p className="whitespace-nowrap text-lg font-bold text-gray-900">{index(current.dimensions[dimension.key])}<span className="text-xs font-normal text-gray-500"> / 100</span></p></div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-100"><div className={`h-full ${dimension.color}`} style={{ width: `${current.dimensions[dimension.key] ?? 0}%` }} /></div>
+              <p className="mt-3 text-sm leading-6 text-gray-600">{dimension.measures}.</p>
+              <a href={dimension.href} target="_blank" rel="noopener noreferrer" className="mt-3 inline-block text-sm font-medium text-blue-700 underline">How to improve this metadata →</a>
+            </article>)}
+            <aside className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
+              <h3 className="font-semibold">Interpret funding in context</h3>
+              <p className="mt-2">Absent funding metadata does not establish that research was funded or unfunded. The current weighting remains under community discussion.</p>
+              <p className="mt-2">Funder-ROR coverage averages {current.funderRor === null ? 'Not available' : `${index(current.funderRor)}%`} across publishers with this field, including zero coverage. These records receive funding credit: a work with both legacy funder metadata and a funder ROR ID counts once.</p>
+              <p className="mt-2">The weights remain 10 points for funder information and 10 points for award numbers.</p>
+              <p className="mt-2">Organizations uses affiliation-specific ROR coverage. Funder ROR IDs do not contribute to that dimension.</p>
+            </aside>
           </div>
+        </section>
 
-          <p>
-            <strong>APS</strong> moves from an index of 58 overall to 81 on current content
-            (#6 among all active publishers). <strong>ASM</strong> jumps from 67 to 86
-            (#3 in current era). Only <strong>135 publishers</strong> (0.6%) have a meaningfully lower index
-            lower on current content than overall.
-          </p>
+        <section className="mt-12" aria-labelledby="content-types">
+          <h2 id="content-types" className="text-2xl font-bold text-gray-900">Content types have different coverage profiles</h2>
+          <p className="mt-3 text-sm leading-6 text-gray-600">Each row uses that content type’s Current publisher cohort. Counts and averages have different denominators across rows; these are not comparisons of publisher or research quality.</p>
+          <div className="mt-5 overflow-x-auto rounded-xl border bg-white"><table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-gray-600"><tr><th className="px-5 py-3">Current content type</th><th className="px-5 py-3 text-right">Publishers</th><th className="px-5 py-3 text-right">Average index</th></tr></thead>
+            <tbody className="divide-y">{typeComparisons.map((type) => <tr key={type.type}><th className="px-5 py-3 text-left font-medium"><Link className="text-blue-700 underline" href={buildLeaderboardHref({ era: 'current', contentType: type.type })}>{type.label}</Link></th><td className="px-5 py-3 text-right">{number(type.summary.count)}</td><td className="px-5 py-3 text-right">{index(type.summary.average)}</td></tr>)}</tbody>
+          </table></div>
+          <p className="mt-3 text-xs leading-5 text-gray-500">Only documented Participation Report work types are scored. Peer reviews, journal issues, and other unsupported schemas are disclosed on publisher profiles without receiving an index. {number(pair.overall.notBenchmarked)} registered members have no complete supported aggregate in this snapshot.</p>
+        </section>
 
-          <div className="not-prose my-8 border-t border-gray-200" />
+        <section className="mt-12" aria-labelledby="publisher-examples">
+          <h2 id="publisher-examples" className="text-2xl font-bold text-gray-900">Publisher examples in this scope</h2>
+          <p className="mt-3 text-sm leading-6 text-gray-600">A fixed selection of familiar members, with values and positions read from this snapshot. Select a publisher for metric details and an action plan. Live profiles may show newer API data; their snapshot positions remain dated.</p>
+          <div className="mt-5 overflow-x-auto rounded-xl border bg-white"><table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-gray-600"><tr><th className="px-5 py-3">Publisher</th><th className="px-5 py-3 text-right">Current works</th><th className="px-5 py-3 text-right">Overall</th><th className="px-5 py-3 text-right">Current</th><th className="px-5 py-3 text-right">Current position</th></tr></thead>
+            <tbody className="divide-y">{examples.map((row) => <tr key={row.id}><th className="px-5 py-3 text-left font-medium"><Link href={buildMemberHref(row.id, { era: 'current', contentType })} className="text-blue-700 underline">{row.name}</Link></th><td className="px-5 py-3 text-right">{number(row.scopeWorks)}</td><td className="px-5 py-3 text-right">{byId.get(row.id)?.score ?? 'Not available'}</td><td className="px-5 py-3 text-right font-semibold">{row.score}</td><td className="px-5 py-3 text-right">#{number(row.rank)}</td></tr>)}{examples.length === 0 && <tr><td colSpan={5} className="px-5 py-4 text-gray-600">None of the example publishers has a Current benchmark in this content type. Use the explorer to see the publishers in scope.</td></tr>}</tbody>
+          </table></div>
+        </section>
 
-          {/* ======== SECTION 2: BY CONTENT TYPE ======== */}
-          <div id="by-content-type" className="not-prose mb-4 flex items-center gap-3">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-purple-100 text-sm font-bold text-purple-700">2</span>
-            <h2 className="text-2xl font-bold text-gray-900 m-0">By Content Type</h2>
-          </div>
-          <div className="rounded-lg border-l-4 border-purple-400 bg-purple-50 p-4 not-prose mb-6">
-            <p className="text-sm text-purple-800">
-              <strong>What this shows:</strong> Aggregate index values mix content types with fundamentally different metadata
-              expectations. The{' '}
-              <Link href="/leaderboard?era=current" className="font-medium underline">content-type filter</Link> on
-              both benchmarks enables like-for-like comparisons—and the picture changes substantially.
-            </p>
-          </div>
-
-          <h3>Why the Aggregate Needs Context</h3>
-          <p>
-            A publisher registering journal articles, peer reviews, components, and corrections gets one
-            blended index value—but peer reviews do not have abstracts by design, and components rarely carry
-            funding metadata. The aggregate can therefore obscure strong coverage on a publisher&apos;s primary content.
-          </p>
-
-          <div className="not-prose my-6 overflow-hidden rounded-lg border">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">Publisher</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Aggregate</th>
-                  <th className="px-4 py-3 text-center font-medium text-purple-700">Journal Articles</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-500">The Diluter</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                {[
-                  ['eLife', '31', '97', 'Peer Reviews: 13'],
-                  ['APS', '81', '81', 'Proceedings: 7'],
-                  ['MDPI', '68', '71', 'Consistent across types'],
-                ].map(([name, aggregate, ja, diluter]) => (
-                  <tr key={name}>
-                    <td className="px-4 py-3 font-medium">{name}</td>
-                    <td className="px-4 py-3 text-center text-gray-500">{aggregate}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-purple-700">{ja}</td>
-                    <td className="px-4 py-3 text-center text-sm text-gray-500">{diluter}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <p>
-            <strong>eLife</strong> is the most dramatic example. Its aggregate current index is 31,
-            while journal articles have an index of <strong>97</strong>, moving
-            from #2,581 to <strong>#2 in the filtered benchmark</strong>. Peer reviews have an index
-            of 13—content that by design does not carry abstracts or
-            funding metadata.
-          </p>
-
-          <h3>Benchmark Positions Shift Dramatically</h3>
-          <p>
-            Six of the journal-article top 10 weren&apos;t even in the overall top 2,000. The content-type
-            filter does not just adjust index values—it reveals a different metadata profile.
-          </p>
-
-          <h3>Pipeline Per Type, Not Per Discipline</h3>
-          <p>
-            The finding is consistent across every publisher analyzed: <strong>metadata quality is driven
-            by the deposit pipeline per content type</strong>, not by the discipline of the research.
-            APS&apos;s journal-article pipeline has an index of 81, while its proceedings pipeline
-            has an index of 7. Same publisher, same era, two completely
-            different investments.
-          </p>
-
-          <div className="not-prose my-8 border-t border-gray-200" />
-
-          {/* ======== SECTION 3: BY DIMENSION ======== */}
-          <div id="by-dimension" className="not-prose mb-4 flex items-center gap-3">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-sm font-bold text-amber-700">3</span>
-            <h2 className="text-2xl font-bold text-gray-900 m-0">By Dimension</h2>
-          </div>
-          <div className="rounded-lg border-l-4 border-amber-400 bg-amber-50 p-4 not-prose mb-6">
-            <p className="text-sm text-amber-800">
-              <strong>What this shows:</strong> The five dimensions of Nexus-Index are not equally adopted.
-              Some are nearly solved, others are essentially empty — even on current content. This is where the gaps are.
-            </p>
-          </div>
-
-          <div className="not-prose my-6 overflow-hidden rounded-lg border">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">Dimension</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">What It Measures</th>
-                  <th className="px-4 py-3 text-center font-medium text-amber-700">Avg (Current)</th>
-                  <th className="px-4 py-3 text-center font-medium text-gray-700">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                {[
-                  ['Access', 'Licenses, full-text links, abstracts', '47', 'Improving', 'bg-yellow-100 text-yellow-800'],
-                  ['People', 'ORCID IDs for authors', '28', 'Uneven', 'bg-orange-100 text-orange-800'],
-                  ['Provenance', 'References, update policies, similarity check', '25', 'Uneven', 'bg-orange-100 text-orange-800'],
-                  ['Organizations', 'Affiliations, ROR IDs', '7', 'Near Empty', 'bg-red-100 text-red-800'],
-                  ['Funding', 'Funder registry IDs, award numbers', '2', 'Near Empty', 'bg-red-100 text-red-800'],
-                ].map(([dim, measures, avg, status, color]) => (
-                  <tr key={dim}>
-                    <td className="px-4 py-3 font-medium">{dim}</td>
-                    <td className="px-4 py-3 text-sm text-gray-500">{measures}</td>
-                    <td className="px-4 py-3 text-center font-bold">{avg}/100</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${color}`}>{status}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <h3>Access (47/100) — The Closest to Solved</h3>
-          <p>
-            Licenses are widely deposited. Full-text links are common. Abstracts are the weak spot — some
-            publishers are actively restricting abstract access due to AI concerns, while others are
-            expanding it. This dimension shows the most variation publisher to publisher.
-          </p>
-
-          <h3>People (28/100) — ORCID Adoption Is Uneven</h3>
-          <p>
-            Some publishers (APS, eLife, MDPI) have near-universal ORCID coverage on current content.
-            Others haven&apos;t started. When a publisher turns on ORCID deposits, coverage jumps
-            overnight — this is a pipeline switch, not a gradual adoption curve.
-          </p>
-
-          <h3>Provenance (25/100) — References Are Strong, Policies Are Not</h3>
-          <p>
-            Reference deposits are high across the industry. But update policies (CrossMark) and
-            similarity checking (Similarity Check / iThenticate) remain low. These are publisher service subscriptions,
-            not metadata deposits — harder to change at scale.
-          </p>
-
-          <h3>Organizations (7/100) — ROR Is Still Early</h3>
-          <p>
-            Institutional identifiers are the newest metadata field. ROR adoption is growing but from
-            a near-zero base. Affiliations as text strings are more common, but structured ROR IDs
-            are what make the data machine-readable. OJS 3.5 now enables smaller publishers to deposit
-            ROR — expect this to accelerate.
-          </p>
-
-          <h3>Funding (2/100) — The Biggest Gap</h3>
-          <p>
-            Funder registry IDs and award numbers are essentially absent across the industry. This is
-            the single largest gap in scholarly metadata. Absent funding metadata does not mean absent
-            funding — many funded papers simply lack the deposit. For humanities publishers where
-            research is often unfunded, this dimension is structurally penalizing. Use the content-type
-            filter to see funding coverage for journal articles specifically.
-          </p>
-
-          <div className="not-prose my-8 border-t border-gray-200" />
-
-          {/* ======== SECTION 4: BY PUBLISHER TYPE ======== */}
-          <div id="by-publisher-type" className="not-prose mb-4 flex items-center gap-3">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-sm font-bold text-emerald-700">4</span>
-            <h2 className="text-2xl font-bold text-gray-900 m-0">By Publisher Type</h2>
-          </div>
-          <div className="rounded-lg border-l-4 border-emerald-400 bg-emerald-50 p-4 not-prose mb-6">
-            <p className="text-sm text-emerald-800">
-              <strong>What this shows:</strong> Metadata coverage patterns differ among scholarly societies,
-              commercial publishers, and small independents. Interpretation depends on scale and context.
-            </p>
-          </div>
-
-          <h3>Scholarly Societies Show Strong Current-era Coverage</h3>
-          <p>
-            US-based scholarly societies are prominent among large publishers with high
-            current-era index values. ASM, APS, AAS, PNAS, AGU, and ACS show stronger observed
-            coverage than several large commercial publishers. This comparison describes Crossref
-            deposits, not overall publisher quality.
-          </p>
-
-          <h3>Commercial Publishers: Improved, But Far From Solved</h3>
-          <div className="not-prose my-6 overflow-hidden rounded-lg border">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-700">Publisher</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-700">Current Works</th>
-                  <th className="px-4 py-3 text-center font-medium text-emerald-700">Current Index</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                {[
-                  ['MDPI', '632K', '68'],
-                  ['SAGE', '234K', '61'],
-                  ['IOP Publishing', '117K', '55'],
-                  ['Wiley', '895K', '48'],
-                  ['Springer Nature', '2.0M', '47'],
-                  ['Elsevier', '3.0M', '42'],
-                  ['IEEE', '883K', '41'],
-                  ['OUP', '451K', '29'],
-                ].map(([name, works, score]) => (
-                  <tr key={name}>
-                    <td className="px-4 py-3 font-medium">{name}</td>
-                    <td className="px-4 py-3 text-right text-gray-500">{works}</td>
-                    <td className="px-4 py-3 text-center font-bold">{score}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <p>
-            Among the commercial-scale publishers shown here, index values range from 29 to 68.
-            These differences identify metadata workflow gaps; they are not assessments of publishing quality.
-          </p>
-
-          <h3>South Korea Still Dominates the Top 50</h3>
-          <p>
-            <strong>33 of the top 50</strong> current-era publishers are South Korean — nearly identical
-            to the overall benchmark. The pattern holds across eras and content types.
-          </p>
-
-          <h3>Small Publishers: High Index Values, Different Scale</h3>
-          <p>
-            Many publishers with high index values have fewer than 10,000 DOIs. Achieving 100% metadata coverage on
-            172 articles is a different challenge than on 24 million. Small publishers have a structural
-            advantage in direct comparisons—but active improvement at any scale demonstrates that
-            awareness of the gap is the first step.
-          </p>
-
-          <div className="not-prose my-8 border-t border-gray-200" />
-
-          {/* ======== BOTTOM LINE ======== */}
-          <h2>The Bottom Line</h2>
-          <p>
-            Every lens reveals something different:
-          </p>
-          <ul>
-            <li>
-              <strong>Overall vs Current:</strong> The industry is getting better — 2,844 publishers
-              have meaningfully higher index values on recent content. Backfile records change the aggregate picture.
-            </li>
-            <li>
-              <strong>By Content Type:</strong> Aggregate values need context. eLife&apos;s aggregate is in the
-              30s while its journal-article value is near 100. Deposit pipelines differ by content type.
-            </li>
-            <li>
-              <strong>By Dimension:</strong> Access is nearly solved. ORCIDs are unevenly adopted.
-              Organizations and Funding are essentially empty across the board — the two biggest
-              areas where clearer metadata signals would help.
-            </li>
-            <li>
-              <strong>By Publisher Type:</strong> Several scholarly societies show high current-era
-              coverage. Large commercial and small independent publishers face different workflow and scale contexts.
-            </li>
-          </ul>
-          <p>
-            Use the{' '}
-            <Link href="/leaderboard?era=current" className="font-medium underline">content-type filter</Link> on
-            the benchmark to explore these patterns for any publisher.
-          </p>
-        </article>
-
-        {/* CTA */}
-        <div className="mt-12 flex flex-col items-center gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-6 text-center">
-          <p className="text-lg font-semibold text-emerald-900">
-            See where your publisher stands
-          </p>
-          <div className="flex gap-3">
-            <Link
-              href="/leaderboard?era=current"
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-            >
-              Current Benchmark
-            </Link>
-            <Link
-              href="/leaderboard"
-              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Overall Benchmark
-            </Link>
-          </div>
-        </div>
-
-        <p className="mt-8 text-center text-sm text-gray-500">
-          Data sourced from the Crossref API. &quot;Current&quot; = last 2 calendar years per Crossref&apos;s definition.
-        </p>
+        <footer className="mt-12 space-y-3 rounded-xl border border-brand-rule bg-brand-mist p-6 text-sm leading-6 text-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900">What this snapshot can tell us</h2>
+          <p>The index diagnoses metadata visible through Crossref. It does not identify why metadata is absent, establish research funding eligibility, or demonstrate that a work was screened for plagiarism. Similarity Check measures deposited URLs; Crossmark measures registered update metadata and has no additional participation fee.</p>
+          <p>Overall uses all-years coverage of supported work types, weighted by their work counts within each publisher. Current uses the same rules for {period}. Publishers then have equal weight in the averages on this page. Weights and grade thresholds are unchanged.</p>
+          <p>Crossref can enrich metadata, including matching funder names to ROR IDs on new or updated records. Changes between snapshots can reflect deposits, enrichment, content mix, or membership changes. A historical comparison needs matched cohorts and compatible methodology versions.</p>
+          <div className="flex flex-wrap gap-x-5 gap-y-2"><a className="text-blue-700 underline" href="https://www.crossref.org/documentation/reports/participation-reports/">Crossref Participation Reports</a><a className="text-blue-700 underline" href="https://github.com/Annexis/nexus-score/issues">Community methodology discussions</a><Link className="text-blue-700 underline" href="/gap-fixer">Explore the metadata fixer</Link></div>
+        </footer>
       </div>
-    </div>
+    </main>
   );
 }

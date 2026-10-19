@@ -14,7 +14,7 @@ import type {
 
 interface MetricsTableProps {
   contentTypeScores: ContentTypeScore[] | null;
-  eraDimensions: { current: DimensionScores; backfile: DimensionScores | null } | null;
+  eraDimensions: { current: DimensionScores | null; backfile: DimensionScores | null } | null;
   currentWorks: number;
   backfileWorks: number;
   scorableScore: ScorableMemberScore | null;
@@ -96,7 +96,7 @@ export function MetricsTable({
     <section className={cn('overflow-hidden rounded-xl border bg-white shadow-sm print:break-before-page', className)}>
       <div className="border-b px-4 py-5 sm:px-6">
         <h2 className="text-lg font-semibold text-gray-900">Detailed Metrics</h2>
-        <p className="mt-1 text-sm text-gray-600">{scopeLabel} - the same 11 metrics compared across both deposit eras.</p>
+        <p className="mt-1 text-sm text-gray-600">{scopeLabel} - the same 11 metrics compared across both publication eras.</p>
         {selectedIsUnsupported && selected && (
           <p className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
             Not benchmarked: {selected.label} use a different Crossref schema, so these Participation Report metrics are not treated as 0% coverage.

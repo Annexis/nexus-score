@@ -16,12 +16,15 @@ export {
   CrossrefRateLimitError,
   CrossrefTimeoutError,
 } from './crossref/errors.js';
+export { fundingCoverage, completeFundingCoverage, needsFundingSupplement, FUNDING_UNION_FIELD } from './crossref/funding.js';
+export type { FundingOnlyWork } from './crossref/funding.js';
 
 export type {
   CrossrefMember,
   CrossrefJournal,
   CrossrefWork,
   MemberCoverage,
+  CoverageFields,
   MemberFlags,
   MemberPrefix,
   Author,
@@ -40,6 +43,8 @@ export type {
 // Scoring engine
 export {
   calculateMemberScore,
+  METHODOLOGY_VERSION,
+  UnscorableMemberError,
   calculateJournalScore,
   calculateScoreFromCoverage,
   calculateDimensionsForPeriod,
@@ -114,6 +119,8 @@ export {
 } from './institution/index.js';
 
 // Benchmark ranking
+export { buildBenchmarkSnapshots, scopedBenchmark, summarizeBenchmark, compareBenchmarkEras } from './benchmark/snapshot.js';
+export type { BenchmarkSnapshot, BenchmarkEntry, BenchmarkContentType, BenchmarkDimensions } from './benchmark/snapshot.js';
 export { rankByScore, type CompetitionRank } from './ranking/competition.js';
 
 export type {

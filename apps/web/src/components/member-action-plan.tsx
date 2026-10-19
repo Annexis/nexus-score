@@ -34,7 +34,7 @@ export function MemberActionPlan({ memberCurrentDimensions, memberCurrentWorks, 
       <div className="border-b border-blue-200 pb-4">
         <h2 id="action-plan-heading" className="text-xl font-semibold text-blue-950">Action Plan</h2>
         <p className="mt-1 text-sm leading-6 text-blue-800">
-          Recommendations focus on Current deposits ({range.currentStart}-{range.currentEnd}). Each list states exactly which records it describes.
+          Recommendations focus on Current publications ({range.currentStart}-{range.currentEnd}). Each list states exactly which records it describes.
         </p>
       </div>
 

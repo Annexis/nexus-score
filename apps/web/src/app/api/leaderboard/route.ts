@@ -1,52 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { rankByScore } from '@nexus-score/core';
+import { rankByScore, isScorableContentType, type BenchmarkEntry } from '@nexus-score/core';
+import { getBenchmarkSnapshots } from '@/lib/benchmark-data';
 
 type Grade = 'A' | 'B' | 'C' | 'D' | 'F';
 type Era = 'overall' | 'current';
 type DimensionKey = 'provenance' | 'people' | 'organizations' | 'funding' | 'access';
 type SortField = 'default' | 'score' | 'works' | 'improvement' | DimensionKey;
 type SortDirection = 'asc' | 'desc';
-
-interface ContentTypeEntry { type: string; label: string; score: number; grade: Grade; works?: number }
-interface Dimensions { provenance: number; people: number; organizations: number; funding: number; access: number }
-
-interface OverallEntry {
-  rank: number; id: number; name: string; location?: string; score: number; grade: Grade;
-  totalWorks: number; currentWorks?: number; currentScore?: number; backfileScore?: number | null;
-  improvement?: number | null; dimensions: Dimensions; contentTypes?: ContentTypeEntry[];
-}
-
-interface CurrentEntry {
-  rank: number; id: number; name: string; location?: string; score: number; grade: Grade;
-  totalWorks: number; currentWorks?: number; overallScore: number; improvement?: number | null;
-  dimensions: Dimensions; contentTypes?: ContentTypeEntry[];
-}
-
-interface OverallData {
-  generatedAt: string; totalMembers: number; totalWithWorks: number;
-  leaderboard: OverallEntry[];
-}
-
-interface CurrentData {
-  generatedAt: string; totalMembers: number; totalActive: number;
-  leaderboard: CurrentEntry[];
-}
-
+type OverallEntry = BenchmarkEntry;
+type CurrentEntry = BenchmarkEntry;
 const GRADES = new Set<Grade>(['A', 'B', 'C', 'D', 'F']);
 const DIMENSIONS = new Set<DimensionKey>(['provenance', 'people', 'organizations', 'funding', 'access']);
-let overallCache: OverallData | null | undefined;
-let currentCache: CurrentData | null | undefined;
-
-function readData<T>(filename: string): T | null {
-  const path = join(process.cwd(), 'data', filename);
-  if (!existsSync(path)) return null;
-  try { return JSON.parse(readFileSync(path, 'utf8')) as T; } catch { return null; }
-}
-
-function getOverallData() { return overallCache ??= readData<OverallData>('leaderboard.json'); }
-function getCurrentData() { return currentCache ??= readData<CurrentData>('current-leaderboard.json'); }
 
 function integer(value: string | null, fallback: number, min: number, max: number) {
   const parsed = value === null ? fallback : Number.parseInt(value, 10);
@@ -72,11 +36,16 @@ export async function GET(request: NextRequest) {
   const direction: SortDirection = params.get('direction') === 'asc' ? 'asc' : 'desc';
   const limit = integer(params.get('limit'), 50, 1, 500);
   const offset = integer(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
-  const overall = getOverallData();
-  const current = getCurrentData();
+  const pair = getBenchmarkSnapshots();
+  const overall = pair?.overall;
+  const current = pair?.current;
 
   if (!overall || !current) {
-    return NextResponse.json({ error: 'Benchmark data not generated' }, { status: 503 });
+    return NextResponse.json({ error: 'Compatible benchmark snapshots are not available. Regenerate both eras.' }, { status: 503 });
+  }
+
+  if (contentType !== 'all' && !isScorableContentType(contentType)) {
+    return NextResponse.json({ error: 'This record type is not benchmarked.' }, { status: 400 });
   }
 
   const primary = era === 'current' ? current.leaderboard : overall.leaderboard;
@@ -101,7 +70,7 @@ export async function GET(request: NextRequest) {
         : comparisonScore - score;
     const publisherPeriodWorks = era === 'current'
       ? (entry as CurrentEntry).currentWorks ?? null
-      : entry.totalWorks;
+      : entry.scopeWorks;
     const selectedTypeWorks = selected?.works ?? null;
 
     return [{
@@ -118,7 +87,7 @@ export async function GET(request: NextRequest) {
       comparisonLabel: era === 'current' ? 'Overall' : 'Current',
       improvement,
       currentVsOverall,
-      dimensions: contentType === 'all' ? entry.dimensions : null,
+      dimensions: selected?.dimensions ?? entry.dimensions,
     }];
   });
 
@@ -127,7 +96,7 @@ export async function GET(request: NextRequest) {
   scoped = rankByScore(scoped, (entry) => entry.score);
 
   const scopeTotal = scoped.length;
-  const averageScore = scopeTotal > 0 ? Math.round(scoped.reduce((sum, entry) => sum + entry.score, 0) / scopeTotal) : 0;
+  const averageScore = scopeTotal > 0 ? Math.round(scoped.reduce((sum, entry) => sum + entry.score, 0) / scopeTotal * 10) / 10 : 0;
   const highestScore = scoped[0]?.score ?? 0;
   const distribution = [
     { label: '80-100', min: 80, max: 101 },
@@ -153,6 +122,11 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     scope: { era, contentType },
+    methodologyVersion: overall.methodologyVersion,
+    coverageCollectedAt: overall.coverageCollectedAt,
+    fundingCollectedAt: overall.fundingCollectedAt,
+    currentStart: overall.currentStart,
+    currentEnd: overall.currentEnd,
     generatedAt: era === 'current' ? current.generatedAt : overall.generatedAt,
     totalMembers: era === 'current' ? current.totalMembers : overall.totalMembers,
     summary: { scopeTotal, averageScore, highestScore, distribution },

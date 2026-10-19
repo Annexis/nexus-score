@@ -1,12 +1,15 @@
 import { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { getBenchmarkSnapshots } from '@/lib/benchmark-data';
 import {
   CrossrefClient,
+  METHODOLOGY_VERSION,
+  UnscorableMemberError,
+  type BenchmarkSnapshot,
+  type BenchmarkEntry,
   calculateMemberScore,
-  calculateDimensionsForPeriod,
+  fundingCoverage,
   calculateContentTypeScores,
   calculateScorableMemberScore,
   rankByScore,
@@ -44,46 +47,8 @@ interface PageProps {
   searchParams: Promise<{ era?: string | string[]; contentType?: string | string[] }>;
 }
 
-interface LeaderboardContentType {
-  type: string;
-  label: string;
-  score: number;
-}
-
-interface LeaderboardEntry {
-  rank: number;
-  id: number;
-  name: string;
-  location?: string;
-  score: number;
-  totalWorks: number;
-  currentWorks?: number;
-  currentScore?: number;
-  backfileScore?: number | null;
-  improvement?: number | null;
-  dimensions: {
-    provenance: number;
-    people: number;
-    organizations: number;
-    funding: number;
-    access: number;
-  };
-  currentDimensions?: {
-    provenance: number;
-    people: number;
-    organizations: number;
-    funding: number;
-    access: number;
-  };
-  contentTypes?: LeaderboardContentType[];
-}
-
-interface LeaderboardData {
-  generatedAt: string;
-  totalMembers: number;
-  totalWithWorks: number;
-  leaderboard: LeaderboardEntry[];
-}
+type LeaderboardEntry = BenchmarkEntry;
+type LeaderboardData = BenchmarkSnapshot;
 
 interface RankingInfo {
   score: number;
@@ -94,22 +59,8 @@ interface RankingInfo {
   topGap: number | null; // points needed to reach top 10%
 }
 
-interface CurrentLeaderboardEntry {
-  rank: number;
-  id: number;
-  name: string;
-  score: number;
-  contentTypes?: LeaderboardContentType[];
-}
-
-interface CurrentLeaderboardData {
-  generatedAt: string;
-  totalActive: number;
-  leaderboard: CurrentLeaderboardEntry[];
-}
-
 interface EraDimensions {
-  current: DimensionScores;
+  current: DimensionScores | null;
   backfile: DimensionScores | null;
 }
 
@@ -122,36 +73,10 @@ const client = new CrossrefClient({
   mailto: process.env.CROSSREF_MAILTO || 'varma2friend@gmail.com',
 });
 
-// These snapshots are immutable within a deployment. Reuse the parsed data
-// across rankings and requests instead of parsing ~46 MB for every page view.
-let leaderboardCache: LeaderboardData | null | undefined;
-let currentLeaderboardCache: CurrentLeaderboardData | null | undefined;
+function getLeaderboardData(): LeaderboardData | null { return getBenchmarkSnapshots()?.overall ?? null; }
+function getCurrentLeaderboardData(): BenchmarkSnapshot | null { return getBenchmarkSnapshots()?.current ?? null; }
 
-function getLeaderboardData(): LeaderboardData | null {
-  if (leaderboardCache !== undefined) return leaderboardCache;
-  const dataPath = join(process.cwd(), 'data', 'leaderboard.json');
-  if (!existsSync(dataPath)) return (leaderboardCache = null);
-  try {
-    const content = readFileSync(dataPath, 'utf-8');
-    return (leaderboardCache = JSON.parse(content) as LeaderboardData);
-  } catch {
-    return (leaderboardCache = null);
-  }
-}
-
-function getCurrentLeaderboardData(): CurrentLeaderboardData | null {
-  if (currentLeaderboardCache !== undefined) return currentLeaderboardCache;
-  const dataPath = join(process.cwd(), 'data', 'current-leaderboard.json');
-  if (!existsSync(dataPath)) return (currentLeaderboardCache = null);
-  try {
-    const content = readFileSync(dataPath, 'utf-8');
-    return (currentLeaderboardCache = JSON.parse(content) as CurrentLeaderboardData);
-  } catch {
-    return (currentLeaderboardCache = null);
-  }
-}
-
-function getRankingInfo(memberId: number, score: number): RankingInfo | null {
+function getRankingInfo(memberId: number): RankingInfo | null {
   const data = getLeaderboardData();
   if (!data) return null;
 
@@ -160,24 +85,7 @@ function getRankingInfo(memberId: number, score: number): RankingInfo | null {
   const memberIndex = ranked.findIndex((entry) => entry.id === memberId);
   const memberEntry = memberIndex >= 0 ? ranked[memberIndex] : null;
 
-  if (!memberEntry) {
-    // Member not in leaderboard (maybe 0 works) - estimate rank by score
-    const betterCount = leaderboard.filter((e) => e.score > score).length;
-    const rank = betterCount + 1;
-    const percentile = Math.round((1 - rank / totalWithWorks) * 100);
-    const top10PercentRank = Math.ceil(totalWithWorks * 0.1);
-    const top10Entry = leaderboard[top10PercentRank - 1];
-    const topGap = top10Entry ? Math.max(0, top10Entry.score - score) : null;
-
-    return {
-      score,
-      rank,
-      totalPublishers: totalWithWorks,
-      percentile: Math.max(0, percentile),
-      nearbyPublishers: [],
-      topGap,
-    };
-  }
+  if (!memberEntry) return null;
 
   const rank = memberEntry.rank;
   const percentile = Math.round((1 - rank / totalWithWorks) * 100);
@@ -193,7 +101,7 @@ function getRankingInfo(memberId: number, score: number): RankingInfo | null {
   const top10Entry = ranked[top10PercentRank - 1];
   const topGap =
     rank > top10PercentRank && top10Entry
-      ? Math.max(0, top10Entry.score - score)
+      ? Math.max(0, top10Entry.score - memberEntry.score)
       : null;
 
   return {
@@ -206,7 +114,7 @@ function getRankingInfo(memberId: number, score: number): RankingInfo | null {
   };
 }
 
-function getCurrentRankingInfo(memberId: number, score: number): RankingInfo | null {
+function getCurrentRankingInfo(memberId: number): RankingInfo | null {
   const data = getCurrentLeaderboardData();
   if (!data) return null;
 
@@ -215,21 +123,7 @@ function getCurrentRankingInfo(memberId: number, score: number): RankingInfo | n
   const memberIndex = ranked.findIndex((entry) => entry.id === memberId);
   const memberEntry = memberIndex >= 0 ? ranked[memberIndex] : null;
 
-  if (!memberEntry) {
-    const betterCount = leaderboard.filter((entry) => entry.score > score).length;
-    const rank = betterCount + 1;
-    const percentile = Math.round((1 - rank / totalActive) * 100);
-    const top10Entry = ranked[Math.ceil(totalActive * 0.1) - 1];
-
-    return {
-      score,
-      rank,
-      totalPublishers: totalActive,
-      percentile: Math.max(0, percentile),
-      nearbyPublishers: [],
-      topGap: top10Entry ? Math.max(0, top10Entry.score - score) : null,
-    };
-  }
+  if (!memberEntry) return null;
 
   const rank = memberEntry.rank;
   const percentile = Math.round((1 - rank / totalActive) * 100);
@@ -247,7 +141,7 @@ function getCurrentRankingInfo(memberId: number, score: number): RankingInfo | n
     nearbyPublishers,
     topGap:
       rank > Math.ceil(totalActive * 0.1) && top10Entry
-        ? Math.max(0, top10Entry.score - score)
+        ? Math.max(0, top10Entry.score - memberEntry.score)
         : null,
   };
 }
@@ -315,9 +209,9 @@ function getContentTypeRankings(
 }
 
 function buildScoreFromLeaderboard(entry: LeaderboardEntry): MemberIndex {
-  const currentScore = entry.currentScore ?? entry.score;
-  const backfileScore = entry.backfileScore ?? entry.score;
-  const change = currentScore - backfileScore;
+  const currentScore = entry.currentScore;
+  const backfileScore = entry.backfileScore;
+  const change = currentScore !== null && backfileScore !== null ? currentScore - backfileScore : null;
 
   return {
     total: entry.score,
@@ -329,8 +223,8 @@ function buildScoreFromLeaderboard(entry: LeaderboardEntry): MemberIndex {
       access: { score: Math.round(entry.dimensions.access * 20 / 100), maxScore: 20, percentage: entry.dimensions.access, metrics: [] },
     },
     trend: {
-      direction: change > 2 ? 'up' : change < -2 ? 'down' : 'stable',
-      change: Math.round(change),
+      direction: change === null ? 'stable' : change > 2 ? 'up' : change < -2 ? 'down' : 'stable',
+      change: change === null ? null : Math.round(change),
       currentScore,
       backfileScore,
     },
@@ -343,8 +237,9 @@ function buildScoreFromLeaderboard(entry: LeaderboardEntry): MemberIndex {
       calculatedAt: getLeaderboardData()?.generatedAt || new Date().toISOString(),
       totalWorks: entry.totalWorks,
       currentWorks: entry.currentWorks ?? 0,
-      backfileWorks: entry.totalWorks - (entry.currentWorks ?? 0),
+      backfileWorks: entry.backfileWorks,
       dataSource: 'leaderboard-cache',
+      methodologyVersion: METHODOLOGY_VERSION,
     },
   };
 }
@@ -353,12 +248,12 @@ function buildScoreFromLeaderboard(entry: LeaderboardEntry): MemberIndex {
 // (mirrors packages/core scoring/weights.ts)
 const SIMPLIFIED_METRICS: { key: string; name: string; weight: number }[] = [
   { key: 'references', name: 'References', weight: 15 },
-  { key: 'update-policies', name: 'Update Policies', weight: 5 },
+  { key: 'update-policies', name: 'Crossmark metadata', weight: 5 },
   { key: 'similarity-checking', name: 'Similarity Check', weight: 5 },
   { key: 'orcids', name: 'ORCID iDs', weight: 20 },
   { key: 'affiliations', name: 'Affiliations', weight: 5 },
-  { key: 'ror-ids', name: 'ROR IDs', weight: 10 },
-  { key: 'funders', name: 'Funder Registry IDs', weight: 10 },
+  { key: 'affiliation-ror-ids', name: 'Affiliation ROR IDs', weight: 10 },
+  { key: 'funders', name: 'Funding metadata', weight: 10 },
   { key: 'award-numbers', name: 'Award Numbers', weight: 10 },
   { key: 'licenses', name: 'Licenses', weight: 7 },
   { key: 'resource-links', name: 'Full-text Links', weight: 7 },
@@ -396,8 +291,8 @@ function buildChangeInsights(
 ): ChangeInsights {
   const aggregate = scorableScore.current && scorableScore.backfile
     ? buildMetricChanges(
-        (key) => (scorableScore.current!.coverage as unknown as Record<string, number>)[key] || 0,
-        (key) => (scorableScore.backfile!.coverage as unknown as Record<string, number>)[key] || 0
+        (key) => key === 'funders' ? fundingCoverage(scorableScore.current!.coverage as unknown as Record<string, number>)! : (scorableScore.current!.coverage as unknown as Record<string, number>)[key] || 0,
+        (key) => key === 'funders' ? fundingCoverage(scorableScore.backfile!.coverage as unknown as Record<string, number>)! : (scorableScore.backfile!.coverage as unknown as Record<string, number>)[key] || 0
       )
     : [];
 
@@ -413,8 +308,8 @@ function buildChangeInsights(
     const back = coverageType.backfile?.[ct.type];
     if (!cur || !back) continue;
     perType[ct.type] = buildMetricChanges(
-      (key) => cur[key] || 0,
-      (key) => back[key] || 0
+      (key) => key === 'funders' ? fundingCoverage(cur)! : cur[key] || 0,
+      (key) => key === 'funders' ? fundingCoverage(back)! : back[key] || 0
     );
   }
 
@@ -449,9 +344,9 @@ async function getMemberData(id: string): Promise<{
   changeInsights: ChangeInsights | null;
   eraDimensions: EraDimensions | null;
   scorableScore: ScorableMemberScore | null;
-} | null> {
+} | { unscorable: { name: string; totalWorks: number; reason: string } } | null> {
   try {
-    const member = await client.getMember(id);
+    const member = await client.getMemberForScoring(id);
     const score = calculateMemberScore(member);
     const contentTypeScores = calculateContentTypeScores(
       member['coverage-type'],
@@ -460,14 +355,14 @@ async function getMemberData(id: string): Promise<{
     const scorableScore = calculateScorableMemberScore(member);
     const changeInsights = buildChangeInsights(member, contentTypeScores, scorableScore);
     const eraDimensions: EraDimensions = {
-      current: calculateDimensionsForPeriod(member.coverage, 'current'),
-      backfile:
-        member.counts['backfile-dois'] > 0
-          ? calculateDimensionsForPeriod(member.coverage, 'backfile')
-          : null,
+      current: scorableScore.current?.metricDetails ?? null,
+      backfile: scorableScore.backfile?.metricDetails ?? null,
     };
     return { score, contentTypeScores, changeInsights, eraDimensions, scorableScore };
   } catch (error) {
+    if (error instanceof UnscorableMemberError) {
+      return { unscorable: { name: error.member['primary-name'], totalWorks: error.member.counts['total-dois'], reason: error.message } };
+    }
     if (error instanceof CrossrefNotFoundError) {
       return null;
     }
@@ -505,6 +400,7 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
   const result = await getMemberData(id);
+  if (result && 'unscorable' in result) return { title: `${result.unscorable.name} - Not benchmarked`, description: result.unscorable.reason };
   const score = result?.score;
 
   if (!score) {
@@ -532,12 +428,18 @@ export default async function MemberPage({ params, searchParams }: PageProps) {
     notFound();
   }
 
-  const { score, contentTypeScores, changeInsights, eraDimensions, scorableScore } = result;
-  const rankingInfo = getRankingInfo(parseInt(id), score.total);
-  const currentRankingInfo = getCurrentRankingInfo(
-    parseInt(id),
-    score.trend.currentScore
+  if ('unscorable' in result) return (
+    <main className="mx-auto max-w-4xl px-4 py-12">
+      <h1 className="text-3xl font-bold text-gray-900">{result.unscorable.name}</h1>
+      <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-5 text-gray-700"><strong>Not benchmarked.</strong> {result.unscorable.reason}</p>
+      <p className="mt-4 text-sm text-gray-600">{formatNumber(result.unscorable.totalWorks)} registered works remain acknowledged. Inapplicable or missing coverage is not assigned a zero or an F.</p>
+      <Link href="/leaderboard" className="mt-5 inline-block text-blue-700 underline">Explore supported benchmarks</Link>
+    </main>
   );
+
+  const { score, contentTypeScores, changeInsights, eraDimensions, scorableScore } = result;
+  const rankingInfo = getRankingInfo(parseInt(id));
+  const currentRankingInfo = getCurrentRankingInfo(parseInt(id));
   const isCachedData = score.metadata.dataSource === 'leaderboard-cache';
   const contentTypeRankings = getContentTypeRankings(
     parseInt(id),
@@ -634,18 +536,17 @@ export default async function MemberPage({ params, searchParams }: PageProps) {
             liveOverallScore={scorableScore?.all?.score ?? score.total}
             liveCurrentScore={scorableScore?.current?.score ?? score.trend.currentScore}
             contentTypeScores={contentTypeScores}
-            aggregateBenchmarkAvailable={false}
+            aggregateBenchmarkAvailable={getLeaderboardData()?.methodologyVersion === METHODOLOGY_VERSION && getCurrentLeaderboardData()?.methodologyVersion === METHODOLOGY_VERSION}
           />
         )}
 
         {/* Main Content */}
         <div className="mt-8 grid gap-6 lg:grid-cols-3">
           {/* Left Column - Index and Dimensions */}
-          <div className="space-y-6 lg:col-span-2">
+          <div className="min-w-0 space-y-6 lg:col-span-2">
             <MemberScoreView
               total={score.total}
               trend={score.trend}
-              dimensions={score.dimensions}
               currentWorks={score.metadata.currentWorks}
               backfileWorks={score.metadata.backfileWorks}
               contentTypeScores={contentTypeScores}
@@ -689,7 +590,7 @@ export default async function MemberPage({ params, searchParams }: PageProps) {
                     <p className="mt-1 text-sm text-gray-500">
                       {contentTypeScores.length === 1
                         ? `All works are ${contentTypeScores[0].label.toLowerCase()} \u2014 the aggregate index above reflects that content type.`
-                        : 'Index values are calculated separately for each content type registered with Crossref. Overall is all years; Current and Backfile show the two deposit eras.'}
+                        : 'Index values are calculated separately for each content type registered with Crossref. Overall is all years; Current and Backfile show the two publication eras.'}
                     </p>
                   </div>
                 </div>
@@ -811,7 +712,7 @@ export default async function MemberPage({ params, searchParams }: PageProps) {
           </div>
 
           {/* Right Column - provenance and sharing */}
-          <div>
+          <div className="min-w-0">
             {/* Additional Info */}
             <div className="rounded-xl border bg-white p-6 shadow-sm print:break-inside-avoid">
               <h3 className="text-lg font-semibold text-gray-900">About This Index</h3>

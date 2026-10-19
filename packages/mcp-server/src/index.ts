@@ -78,7 +78,7 @@ server.tool(
   },
   async ({ member_id }) => {
     try {
-      const member = await client.getMember(member_id);
+      const member = await client.getMemberForScoring(member_id);
       const score = calculateMemberScore(member);
       logQuery('get_member_score', { member_id }, { success: true, summary: `${score.metadata.entityName}: ${score.total}/${score.grade}` });
 
@@ -175,7 +175,7 @@ server.tool(
   },
   async ({ issn }) => {
     try {
-      const journal = await client.getJournal(issn);
+      const journal = await client.getJournalForScoring(issn);
       const score = calculateJournalScore(journal);
 
       return {
@@ -218,7 +218,7 @@ server.tool(
     try {
       const scores = await Promise.all(
         member_ids.map(async (id) => {
-          const member = await client.getMember(id);
+          const member = await client.getMemberForScoring(id);
           return calculateMemberScore(member);
         })
       );
@@ -280,7 +280,7 @@ server.tool(
   },
   async ({ member_id, limit }) => {
     try {
-      const member = await client.getMember(member_id);
+      const member = await client.getMemberForScoring(member_id);
       const score = calculateMemberScore(member);
 
       const recommendations = score.recommendations.slice(0, limit).map((rec) => ({

@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { getBenchmarkSnapshots } from '@/lib/benchmark-data';
 import { LeaderboardTable } from '@/components/leaderboard-table';
 import { DataEnvironmentNotice } from '@/components/data-environment-notice';
 import { parseBenchmarkEra, parseContentType } from '@/lib/benchmark-scope';
@@ -13,24 +12,15 @@ export const metadata: Metadata = {
 
 export const revalidate = 3600;
 
-interface BenchmarkFile {
-  availableContentTypes?: { type: string; label: string; count: number }[];
-}
-
-function readBenchmarkFile(name: string): BenchmarkFile | null {
-  const path = join(process.cwd(), 'data', name);
-  if (!existsSync(path)) return null;
-  try { return JSON.parse(readFileSync(path, 'utf8')) as BenchmarkFile; } catch { return null; }
-}
-
 export default async function LeaderboardPage({
   searchParams,
 }: {
   searchParams: Promise<{ era?: string | string[]; contentType?: string | string[] }>;
 }) {
   const query = await searchParams;
-  const overall = readBenchmarkFile('leaderboard.json');
-  const current = readBenchmarkFile('current-leaderboard.json');
+  const pair = getBenchmarkSnapshots();
+  const overall = pair?.overall;
+  const current = pair?.current;
   const available = new Map<string, { type: string; label: string; count: number }>();
   for (const entry of [...(overall?.availableContentTypes ?? []), ...(current?.availableContentTypes ?? [])]) {
     const existing = available.get(entry.type);
@@ -64,6 +54,9 @@ export default async function LeaderboardPage({
         <div className="mt-6">
           <LeaderboardTable
             availableContentTypes={availableContentTypes}
+            methodologyCompatible={Boolean(pair)}
+            methodologyVersion={overall?.methodologyVersion ?? 'unavailable'}
+            snapshotDate={overall?.generatedAt}
             initialEra={parseBenchmarkEra(query.era)}
             initialContentType={initialContentType}
           />

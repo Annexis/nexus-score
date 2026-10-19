@@ -31,7 +31,7 @@ interface MemberRankingBannerProps {
   benchmarkGeneratedAt: string | null;
   currentBenchmarkGeneratedAt: string | null;
   liveOverallScore: number;
-  liveCurrentScore: number;
+  liveCurrentScore: number | null;
   contentTypeScores: ContentTypeScore[] | null;
   aggregateBenchmarkAvailable: boolean;
 }
@@ -172,7 +172,7 @@ export function MemberRankingBanner({
         </p>
         {!filtered && !aggregateBenchmarkAvailable && (
           <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
-            Aggregate benchmark positions are temporarily withheld: the saved benchmark still includes unsupported record schemas. Live scorable index values remain available below; benchmark positions will return after the next compatible snapshot generation.
+            Compatible aggregate benchmark positions are not available. Live supported-type values remain available below; positions return when a compatible snapshot includes this member.
           </p>
         )}
       </div>

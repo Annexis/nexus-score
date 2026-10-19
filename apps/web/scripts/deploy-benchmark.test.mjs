@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { deployBenchmark, readSnapshots } from './deploy-benchmark.mjs';
 
 const snapshots = ['overall', 'current'].map((era) => ({
-  era, generatedAt: '2026-10-15T10:45:14.235Z', totalMembers: 10, count: era === 'overall' ? 8 : 6,
+  era, generatedAt: '2026-10-15T10:45:14.235Z', methodologyVersion: 'test-v2', totalMembers: 10, count: era === 'overall' ? 8 : 6,
 }));
 
 async function serverFor(t, handler) {
@@ -29,6 +29,7 @@ function liveResponse(era) {
   const snapshot = snapshots.find((entry) => entry.era === era);
   return {
     generatedAt: snapshot.generatedAt,
+    methodologyVersion: snapshot.methodologyVersion,
     totalMembers: snapshot.totalMembers,
     total: snapshot.count,
     summary: { scopeTotal: snapshot.count },
@@ -108,10 +109,23 @@ test('refuses to forward CI identity to a redirected origin', async (t) => {
 test('validates both saved snapshots before deployment', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'benchmark-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const data = { generatedAt: snapshots[0].generatedAt, totalMembers: 10, totalWithWorks: 2, totalActive: 2, leaderboard: [{ id: 1 }, { id: 2 }] };
+  const data = { generatedAt: snapshots[0].generatedAt, methodologyVersion: 'test-v2', totalMembers: 10, totalWithWorks: 2, totalActive: 2, leaderboard: [{ id: 1 }, { id: 2 }] };
   writeFileSync(join(directory, 'leaderboard.json'), JSON.stringify(data));
   writeFileSync(join(directory, 'current-leaderboard.json'), JSON.stringify(data));
   assert.equal(readSnapshots(directory).length, 2);
   writeFileSync(join(directory, 'current-leaderboard.json'), JSON.stringify({ ...data, leaderboard: [] }));
   assert.throws(() => readSnapshots(directory), /Invalid current snapshot/);
+  writeFileSync(join(directory, 'current-leaderboard.json'), JSON.stringify({ ...data, methodologyVersion: 'old-v1' }));
+  assert.throws(() => readSnapshots(directory), /Incompatible benchmark snapshots/);
+  writeFileSync(join(directory, 'current-leaderboard.json'), JSON.stringify({ ...data, generatedAt: '2026-10-01T00:00:00Z' }));
+  assert.throws(() => readSnapshots(directory), /Incompatible benchmark snapshots/);
+});
+
+test('refuses a production response with the correct date and counts but a different methodology', async (t) => {
+  const { base } = await serverFor(t, (request, response) => {
+    if (request.url === '/hook') return response.end(JSON.stringify({ job: { id: 'deployment' } }));
+    const era = new URL(request.url, 'http://localhost').searchParams.get('era');
+    response.end(JSON.stringify({ ...liveResponse(era), methodologyVersion: 'old-v1' }));
+  });
+  await assert.rejects(deployBenchmark({ hook: `${base}/hook`, dashboardUrl: base, snapshots, timeoutMs: 100, intervalMs: 1, log() {} }), /did not publish/);
 });

@@ -63,11 +63,11 @@ export interface TrendInfo {
   /** Overall direction */
   direction: TrendDirection;
   /** Point change (current - backfile) */
-  change: number;
+  change: number | null;
   /** Score for works in Crossref's rolling current three-year window */
-  currentScore: number;
+  currentScore: number | null;
   /** Score for works before Crossref's rolling current window */
-  backfileScore: number;
+  backfileScore: number | null;
 }
 
 export interface Recommendation {
@@ -126,6 +126,8 @@ export interface ScoreMetadata {
   backfileWorks: number;
   /** How the score was calculated */
   dataSource: DataSource;
+  /** Versioned definition used by the generated benchmarks and live API. */
+  methodologyVersion?: string;
 }
 
 /**
@@ -142,6 +144,10 @@ export interface ContentTypeCoverage {
   'similarity-checking': number;
   'award-numbers': number;
   'ror-ids': number;
+  'affiliation-ror-ids'?: number;
+  'funder-ror-ids'?: number;
+  /** Deduplicated existing funding metadata OR funder ROR, derived by the collector. */
+  'funders-including-ror'?: number;
   'update-policies': number;
   'resource-links': number;
 }

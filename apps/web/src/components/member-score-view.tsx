@@ -10,12 +10,11 @@ import { getEraRange } from '@/lib/benchmark-scope';
 interface MemberScoreViewProps {
   total: number;
   trend: TrendInfo;
-  dimensions: DimensionScores;
   currentWorks: number;
   backfileWorks: number;
   contentTypeScores: ContentTypeScore[] | null;
   eraDimensions: {
-    current: DimensionScores;
+    current: DimensionScores | null;
     backfile: DimensionScores | null;
   } | null;
   scorableScore: ScorableMemberScore | null;
@@ -36,7 +35,6 @@ function radarValues(value: DimensionScores | null) {
 export function MemberScoreView({
   total,
   trend,
-  dimensions,
   currentWorks,
   backfileWorks,
   contentTypeScores,
@@ -52,9 +50,9 @@ export function MemberScoreView({
   const scopeLabel = selected?.label ?? 'All Benchmarked Content Types';
   const overallScore = selectedIsUnsupported ? null : selected?.score ?? scorableScore?.all?.score ?? total;
   const overallWorks = selectedIsUnsupported ? selected?.works : selected?.works ?? scorableScore?.all?.works;
-  const currentScore = selectedIsUnsupported ? null : selected?.current?.score ?? (selected ? null : scorableScore?.current?.score ?? trend.currentScore);
+  const currentScore = selectedIsUnsupported ? null : selected?.current?.score ?? (selected ? null : (scorableScore ? scorableScore.current?.score ?? null : trend.currentScore));
   const currentScopeWorks = selected?.current?.works ?? (selected ? undefined : scorableScore?.current?.works ?? currentWorks);
-  const backfileScore = selectedIsUnsupported ? null : selected?.backfile?.score ?? (selected ? null : scorableScore?.backfile?.score ?? trend.backfileScore);
+  const backfileScore = selectedIsUnsupported ? null : selected?.backfile?.score ?? (selected ? null : (scorableScore ? scorableScore.backfile?.score ?? null : trend.backfileScore));
   const backfileScopeWorks = selected?.backfile?.works ?? (selected ? undefined : scorableScore?.backfile?.works ?? backfileWorks);
   const selectedChange = currentScore !== null && backfileScore !== null
     ? currentScore - backfileScore
@@ -64,13 +62,13 @@ export function MemberScoreView({
     : trend.change;
   const historicalDimensions = selectedIsUnsupported ? null : selected
     ? selected.backfile?.metricDetails ?? null
-    : scorableScore?.backfile?.metricDetails ?? eraDimensions?.backfile ?? dimensions;
+    : scorableScore ? scorableScore.backfile?.metricDetails ?? null : eraDimensions?.backfile ?? null;
   const currentDimensions = selectedIsUnsupported ? null : selected
     ? selected.current?.metricDetails ?? null
-    : scorableScore?.current?.metricDetails ?? eraDimensions?.current ?? null;
+    : scorableScore ? scorableScore.current?.metricDetails ?? null : eraDimensions?.current ?? null;
   const selectedIsEmpty = selected !== null && selected.scorable && selected.score === 0 &&
     Object.values(selected.dimensions).every((value) => value === 0);
-  const trendsDiverge = selectedChange !== null && selectedChange !== 0 && aggregateChange !== 0 &&
+  const trendsDiverge = selectedChange !== null && selectedChange !== 0 && aggregateChange !== null && aggregateChange !== 0 &&
     Math.sign(selectedChange) !== Math.sign(aggregateChange);
 
   const scoreCards = [

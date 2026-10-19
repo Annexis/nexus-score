@@ -10,7 +10,7 @@ const dimensionTable = [
     name: 'Provenance',
     points: 25,
     badgeClass: 'border border-brand-rule bg-brand-paper text-brand-ink',
-    measures: 'References (15), Update Policies (5), Similarity Check (5)',
+    measures: 'References (15), Crossmark metadata (5), Similarity Check URLs (5)',
     aiNeeds: 'Trust and traceability of the claim',
     plainEnglish:
       "Where did this paper come from, and can we trust the trail? Did the publisher tell us when it was published, what version this is, what license it's under, and what it cites? Basically — is the paper's paperwork in order.",
@@ -28,7 +28,7 @@ const dimensionTable = [
     name: 'Organizations',
     points: 15,
     badgeClass: 'border border-brand-rule bg-brand-paper text-brand-ink',
-    measures: 'Affiliations (5), ROR IDs (10)',
+    measures: 'Affiliations (5), Affiliation ROR IDs (10)',
     aiNeeds: 'Machine-readable institutional links',
     plainEnglish:
       'Do we know where the authors work? Is the university or institution properly identified with a ROR ID, or is it a free-text string like "Dept of Bio, Univ" that no machine can match to anything?',
@@ -37,7 +37,7 @@ const dimensionTable = [
     name: 'Funding',
     points: 20,
     badgeClass: 'border border-brand-rule bg-brand-paper text-brand-ink',
-    measures: 'Funder Registry IDs (10), Award Numbers (10)',
+    measures: 'Funder information, including ROR (10), Award Numbers (10)',
     aiNeeds: 'Investment traceability for funders',
     plainEnglish:
       'Who paid for this research, and can we follow the money? Is the funder identified with a registry ID? Is the grant number there? Without this, you can\'t answer basic questions like "what did the NIH\'s $40B actually produce?"',
@@ -180,11 +180,13 @@ export default function HomePage() {
             <div className="mt-3 space-y-2 text-sm text-gray-700">
               <p>
                 <strong>1. Coverage Data:</strong> We use Crossref&apos;s pre-computed
-                coverage percentages for each metadata field (current and backfile).
+                coverage percentages for each metadata field and supported work type.
               </p>
               <p>
-                <strong>2. Dimension value:</strong> Each dimension&apos;s percentage is
-                the average of its current and backfile coverage values.
+                <strong>2. Dimension value:</strong> We weight each metadata field&apos;s
+                coverage by work counts across supported types, then apply the metric
+                weights within each dimension. Overall uses all years; Current uses
+                the current publication window.
               </p>
               <p>
                 <strong>3. Index value:</strong> Provenance × 25% +

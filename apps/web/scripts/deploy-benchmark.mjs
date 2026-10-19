@@ -6,18 +6,24 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const scriptPath = fileURLToPath(import.meta.url);
 
 export function readSnapshots(directory) {
-  return ['overall', 'current'].map((era) => {
+  const snapshots = ['overall', 'current'].map((era) => {
     const filename = era === 'overall' ? 'leaderboard.json' : 'current-leaderboard.json';
     const data = JSON.parse(readFileSync(join(directory, filename), 'utf8'));
     const count = era === 'overall' ? data.totalWithWorks : data.totalActive;
     if (!Number.isFinite(Date.parse(data.generatedAt)) ||
         !Number.isInteger(data.totalMembers) || data.totalMembers < 1 ||
         !Number.isInteger(count) || count < 1 || count > data.totalMembers ||
-        !Array.isArray(data.leaderboard) || data.leaderboard.length !== count) {
+        !Array.isArray(data.leaderboard) || data.leaderboard.length !== count ||
+        typeof data.methodologyVersion !== 'string' || !data.methodologyVersion) {
       throw new Error(`Invalid ${era} snapshot; refusing to deploy.`);
     }
-    return { era, generatedAt: data.generatedAt, totalMembers: data.totalMembers, count };
+    return { era, generatedAt: data.generatedAt, methodologyVersion: data.methodologyVersion, totalMembers: data.totalMembers, count };
   });
+  if (snapshots[0].generatedAt !== snapshots[1].generatedAt ||
+      snapshots[0].methodologyVersion !== snapshots[1].methodologyVersion) {
+    throw new Error('Incompatible benchmark snapshots; refusing to deploy.');
+  }
+  return snapshots;
 }
 
 export async function deployBenchmark({
@@ -77,6 +83,7 @@ export async function deployBenchmark({
         if (!response.ok) return { matches: false, status: `${expected.era}: HTTP ${response.status}` };
         const actual = await response.json();
         const matches = actual.generatedAt === expected.generatedAt &&
+          actual.methodologyVersion === expected.methodologyVersion &&
           actual.totalMembers === expected.totalMembers && actual.total === expected.count &&
           actual.summary?.scopeTotal === expected.count && actual.leaderboard?.length === 1;
         return { matches, status: `${expected.era}: ${actual.generatedAt ?? 'missing snapshot'} (${matches ? 'verified' : 'waiting'})` };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CrossrefMember } from '../crossref/types.js';
-import { calculateContentTypeScores, calculateScorableMemberScore } from './calculator.js';
+import type { CrossrefJournal, CrossrefMember } from '../crossref/types.js';
+import { calculateContentTypeScores, calculateJournalScore, calculateScorableMemberScore } from './calculator.js';
 import { generateRecommendationsFromMetricDetails } from '../recommendations/engine.js';
 
 type SimplifiedCoverage = Record<string, number>;
@@ -15,6 +15,8 @@ const zeroCoverage = (): SimplifiedCoverage => ({
   'similarity-checking': 0,
   'award-numbers': 0,
   'ror-ids': 0,
+  'funder-ror-ids': 0,
+  'affiliation-ror-ids': 0,
   'update-policies': 0,
   'resource-links': 0,
 });
@@ -47,6 +49,7 @@ describe('calculateContentTypeScores', () => {
       orcids: 0.9,
       affiliations: 0.5,
       'ror-ids': 0.2,
+      'affiliation-ror-ids': 0.2,
       funders: 0.3,
       'award-numbers': 0.1,
       licenses: 0.7,
@@ -171,6 +174,7 @@ describe('calculateContentTypeScores', () => {
             references: 0.98,
             affiliations: 1,
             'ror-ids': 0,
+            'affiliation-ror-ids': 0,
             funders: 0.76,
             'award-numbers': 0.18,
             licenses: 1,
@@ -191,6 +195,30 @@ describe('calculateContentTypeScores', () => {
     expect(recommendations.some((recommendation) => recommendation.id === 'orcid-coverage')).toBe(false);
     expect(recommendations.some((recommendation) => recommendation.id === 'ror-ids')).toBe(true);
     expect(recommendations.some((recommendation) => recommendation.id === 'award-numbers')).toBe(true);
+  });
+});
+
+describe('calculateJournalScore', () => {
+  const journal = (currentWorks = 10, backfileWorks = 90) => ({
+    ISSN: ['0000-0000'], title: 'Example Journal',
+    counts: { 'current-dois': currentWorks, 'backfile-dois': backfileWorks, 'total-dois': currentWorks + backfileWorks },
+    coverage: Object.fromEntries(['current', 'backfile'].flatMap((era) =>
+      Object.entries(coverage({ orcids: era === 'current' ? 1 : 0, 'ror-ids': 1, 'funder-ror-ids': 1 }))
+        .map(([key, value]) => [`${key}-${era}`, value]))),
+  }) as unknown as CrossrefJournal;
+
+  it('weights publication eras by work count and does not credit funder ROR as affiliation coverage', () => {
+    const score = calculateJournalScore(journal());
+    expect(score.total).toBe(12);
+    expect(score.trend).toMatchObject({ currentScore: 30, backfileScore: 10, change: 20 });
+    expect(score.dimensions.organizations.percentage).toBe(0);
+  });
+
+  it('preserves an absent backfile and refuses missing affiliation coverage', () => {
+    expect(calculateJournalScore(journal(10, 0)).trend.backfileScore).toBeNull();
+    const incomplete = journal();
+    delete incomplete.coverage['affiliation-ror-ids-current'];
+    expect(() => calculateJournalScore(incomplete)).toThrow('coverage is incomplete');
   });
 });
 
