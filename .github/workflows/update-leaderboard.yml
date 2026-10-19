@@ -62,6 +62,9 @@ jobs:
       - name: Build core package
         run: pnpm --filter @nexus-score/core build
 
+      - name: Test scoring and benchmark summaries
+        run: pnpm --filter @nexus-score/core test
+
       - name: Generate leaderboard
         if: github.event_name == 'schedule' || inputs.refresh_data
         run: pnpm --filter @nexus-score/web generate-leaderboard

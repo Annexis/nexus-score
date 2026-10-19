@@ -26,41 +26,38 @@ import {
   TREND_THRESHOLD,
   type MetricWeight,
 } from './weights.js';
-import { generateRecommendations } from '../recommendations/engine.js';
+import { generateRecommendationsFromMetricDetails } from '../recommendations/engine.js';
 import { isScorableContentType } from './content-types.js';
+import { fundingCoverage, FUNDING_UNION_FIELD } from '../crossref/funding.js';
 
 /**
  * Calculate Nexus Score for a Crossref member (publisher)
  * Uses pre-computed coverage statistics from the API
  */
+export const METHODOLOGY_VERSION = '2026-10-funding-union-v3';
+
+export class UnscorableMemberError extends Error {
+  constructor(public readonly member: CrossrefMember) {
+    super('No complete coverage for supported Participation Report work types; this member is not benchmarked.');
+    this.name = 'UnscorableMemberError';
+  }
+}
+
 export function calculateMemberScore(member: CrossrefMember): NexusScore {
-  const coverage = member.coverage;
-
-  // Calculate current and backfile dimensions separately, then average
-  const currentDimensions = calculateDimensionsForPeriod(coverage, 'current');
-  const backfileDimensions = calculateDimensionsForPeriod(coverage, 'backfile');
-  const hasBackfile = member.counts['backfile-dois'] > 0;
-
-  // Average current and backfile to get overall dimensions (matching leaderboard logic)
-  const dimensions = averageDimensions(currentDimensions, backfileDimensions, hasBackfile);
-
-  // Sum total score
-  const total = Math.round(
-    Object.values(dimensions).reduce((sum, dim) => sum + dim.score, 0)
-  );
-
-  // Calculate trend (current vs backfile)
-  const trend = calculateTrend(member.coverage);
-
-  // Generate recommendations
-  const recommendations = generateRecommendations(dimensions, coverage);
-
+  const eras = calculateScorableMemberScore(member);
+  if (!eras.all) throw new UnscorableMemberError(member);
+  const change = eras.current && eras.backfile ? eras.current.score - eras.backfile.score : null;
   return {
-    total,
-    grade: scoreToGrade(total),
-    dimensions,
-    trend,
-    recommendations,
+    total: eras.all.score,
+    grade: eras.all.grade,
+    dimensions: eras.all.metricDetails,
+    trend: {
+      direction: change === null ? 'stable' : change > TREND_THRESHOLD ? 'up' : change < -TREND_THRESHOLD ? 'down' : 'stable',
+      change,
+      currentScore: eras.current?.score ?? null,
+      backfileScore: eras.backfile?.score ?? null,
+    },
+    recommendations: eras.current ? generateRecommendationsFromMetricDetails(eras.current.metricDetails) : [],
     metadata: {
       entityId: member.id,
       entityType: 'member',
@@ -68,9 +65,10 @@ export function calculateMemberScore(member: CrossrefMember): NexusScore {
       location: member.location,
       calculatedAt: new Date().toISOString(),
       totalWorks: member.counts['total-dois'],
-      currentWorks: member.counts['current-dois'],
-      backfileWorks: member.counts['backfile-dois'],
+      currentWorks: eras.current?.works ?? 0,
+      backfileWorks: eras.backfile?.works ?? 0,
       dataSource: 'api-coverage',
+      methodologyVersion: METHODOLOGY_VERSION,
     },
   };
 }
@@ -79,42 +77,34 @@ export function calculateMemberScore(member: CrossrefMember): NexusScore {
  * Calculate Nexus Score for a journal
  */
 export function calculateJournalScore(journal: CrossrefJournal): NexusScore {
-  const coverage = journal.coverage;
-
-  // Calculate current and backfile dimensions separately, then average
-  const currentDimensions = calculateDimensionsForPeriod(coverage, 'current');
-  const backfileDimensions = calculateDimensionsForPeriod(coverage, 'backfile');
-  const hasBackfile = journal.counts['backfile-dois'] > 0;
-
-  // Average current and backfile to get overall dimensions (matching leaderboard logic)
-  const dimensions = averageDimensions(currentDimensions, backfileDimensions, hasBackfile);
-
-  // Sum total score
-  const total = Math.round(
-    Object.values(dimensions).reduce((sum, dim) => sum + dim.score, 0)
-  );
-
-  // Calculate trend
-  const trend = calculateTrend(coverage);
-
-  // Generate recommendations
-  const recommendations = generateRecommendations(dimensions, coverage);
-
+  const readEra = (period: 'current' | 'backfile') => Object.fromEntries(
+    [...Object.keys(SIMPLIFIED_FIELD_MAP), 'funder-ror-ids', FUNDING_UNION_FIELD].map((key) => [key,
+      journal.coverage[`${key}-${period}` as keyof MemberCoverage]])) as Record<string, number>;
+  const currentWorks = journal.counts['current-dois'];
+  const backfileWorks = journal.counts['backfile-dois'];
+  const currentCoverage = readEra('current');
+  const backfileCoverage = readEra('backfile');
+  if ((!currentWorks && !backfileWorks) || currentWorks > 0 && !hasCompleteCoverage(currentCoverage) ||
+      backfileWorks > 0 && !hasCompleteCoverage(backfileCoverage)) {
+    throw new Error('Journal coverage is incomplete, including affiliation-specific ROR coverage; no index is available.');
+  }
+  const overallCoverage = Object.fromEntries(Object.keys(SIMPLIFIED_FIELD_MAP).map((key) => [key,
+    ((currentCoverage[key] ?? 0) * currentWorks + (backfileCoverage[key] ?? 0) * backfileWorks) / (currentWorks + backfileWorks)]));
+  overallCoverage[FUNDING_UNION_FIELD] = ((currentWorks ? fundingCoverage(currentCoverage)! : 0) * currentWorks +
+    (backfileWorks ? fundingCoverage(backfileCoverage)! : 0) * backfileWorks) / (currentWorks + backfileWorks);
+  const overall = scoreFromSimplifiedCoverage(overallCoverage);
+  const current = currentWorks ? scoreFromSimplifiedCoverage(currentCoverage) : null;
+  const backfile = backfileWorks ? scoreFromSimplifiedCoverage(backfileCoverage) : null;
+  const change = current && backfile ? current.score - backfile.score : null;
   return {
-    total,
-    grade: scoreToGrade(total),
-    dimensions,
-    trend,
-    recommendations,
+    total: overall.score, grade: scoreToGrade(overall.score), dimensions: overall.metricDetails,
+    trend: { currentScore: current?.score ?? null, backfileScore: backfile?.score ?? null, change,
+      direction: change === null ? 'stable' : change > TREND_THRESHOLD ? 'up' : change < -TREND_THRESHOLD ? 'down' : 'stable' },
+    recommendations: current ? generateRecommendationsFromMetricDetails(current.metricDetails) : [],
     metadata: {
-      entityId: journal.ISSN[0],
-      entityType: 'journal',
-      entityName: journal.title,
-      calculatedAt: new Date().toISOString(),
-      totalWorks: journal.counts['total-dois'],
-      currentWorks: journal.counts['current-dois'],
-      backfileWorks: journal.counts['backfile-dois'],
-      dataSource: 'api-coverage',
+      entityId: journal.ISSN[0], entityType: 'journal', entityName: journal.title,
+      calculatedAt: new Date().toISOString(), totalWorks: journal.counts['total-dois'],
+      currentWorks, backfileWorks, dataSource: 'api-coverage', methodologyVersion: METHODOLOGY_VERSION,
     },
   };
 }
@@ -133,32 +123,6 @@ export function calculateDimensionsForPeriod(
     funding: calculateDimension('funding', coverage, period),
     access: calculateDimension('access', coverage, period),
   };
-}
-
-/**
- * Average current and backfile dimensions to produce overall scores.
- * If the publisher has no backfile works, use current dimensions only.
- */
-function averageDimensions(
-  current: DimensionScores,
-  backfile: DimensionScores,
-  hasBackfile: boolean
-): DimensionScores {
-  if (!hasBackfile) return current;
-
-  const result: Partial<DimensionScores> = {};
-  for (const key of Object.keys(current) as DimensionName[]) {
-    const cur = current[key];
-    const back = backfile[key];
-    const avgScore = round((cur.score + back.score) / 2);
-    result[key] = {
-      score: avgScore,
-      maxScore: cur.maxScore,
-      percentage: Math.round((avgScore / cur.maxScore) * 100),
-      metrics: cur.metrics, // Show current-era metric details for actionability
-    };
-  }
-  return result as DimensionScores;
 }
 
 /**
@@ -195,7 +159,9 @@ function calculateMetric(
   period: 'current' | 'backfile'
 ): MetricDetail {
   const key = metric.key.replace('-current', `-${period}`) as keyof MemberCoverage;
-  const value = (coverage[key] as number) || 0;
+  const value = metric.key === 'funders-current'
+    ? fundingForPeriod(coverage, period)
+    : (coverage[key] as number) || 0;
   const contribution = value * metric.weight;
 
   return {
@@ -206,44 +172,6 @@ function calculateMetric(
     maxContribution: metric.weight,
     status: valueToStatus(value),
   };
-}
-
-/**
- * Calculate trend comparing current vs backfile scores
- */
-function calculateTrend(coverage: MemberCoverage): TrendInfo {
-  const currentScore = calculateSimpleScore(coverage, 'current');
-  const backfileScore = calculateSimpleScore(coverage, 'backfile');
-  const change = currentScore - backfileScore;
-
-  return {
-    direction:
-      change > TREND_THRESHOLD ? 'up' : change < -TREND_THRESHOLD ? 'down' : 'stable',
-    change: Math.round(change),
-    currentScore: Math.round(currentScore),
-    backfileScore: Math.round(backfileScore),
-  };
-}
-
-/**
- * Calculate a simple score for trend comparison
- */
-function calculateSimpleScore(
-  coverage: MemberCoverage,
-  period: 'current' | 'backfile'
-): number {
-  let total = 0;
-
-  for (const [dimension, metrics] of Object.entries(METRICS_BY_DIMENSION)) {
-    for (const metric of metrics) {
-      // Replace 'current' with the period
-      const key = metric.key.replace('-current', `-${period}`) as keyof MemberCoverage;
-      const value = (coverage[key] as number) || 0;
-      total += value * metric.weight;
-    }
-  }
-
-  return total;
 }
 
 /**
@@ -289,12 +217,22 @@ export function calculateScoreFromCoverage(coverage: Partial<MemberCoverage>): n
 
   for (const metrics of Object.values(METRICS_BY_DIMENSION)) {
     for (const metric of metrics) {
-      const value = (coverage[metric.key as keyof MemberCoverage] as number) || 0;
+      const value = metric.key === 'funders-current'
+        ? fundingForPeriod(coverage, 'current', true)
+        : (coverage[metric.key as keyof MemberCoverage] as number) || 0;
       total += value * metric.weight;
     }
   }
 
   return Math.round(total);
+}
+
+function fundingForPeriod(coverage: Partial<MemberCoverage>, period: 'current' | 'backfile', partial = false): number {
+  const values = Object.fromEntries(['funders', 'funder-ror-ids', FUNDING_UNION_FIELD].map((key) => [key,
+    coverage[`${key}-${period}` as keyof MemberCoverage] ?? (partial && key !== FUNDING_UNION_FIELD ? 0 : undefined)]));
+  const value = fundingCoverage(values);
+  if (value === null) throw new Error('Funding identifier overlap is not resolved; use prepared scoring coverage.');
+  return value;
 }
 
 // ============ CONTENT-TYPE SCORING ============
@@ -334,7 +272,7 @@ const SIMPLIFIED_FIELD_MAP: Record<string, string> = {
   'similarity-checking': 'similarity-checking',
   'orcids': 'orcids',
   'affiliations': 'affiliations',
-  'ror-ids': 'ror-ids',
+  'affiliation-ror-ids': 'affiliation-ror-ids',
   'funders': 'funders',
   'award-numbers': 'award-numbers',
   'licenses': 'licenses',
@@ -347,14 +285,15 @@ const SIMPLIFIED_FIELD_MAP: Record<string, string> = {
  */
 function buildContentTypeMetricDetails(
   coverage: Record<string, number>,
-  percentages: ContentTypeScore['dimensions']
+  percentages: ContentTypeScore['dimensions'],
+  funderCoverage: number
 ): DimensionScores {
   const result: Partial<DimensionScores> = {};
 
   for (const dimension of Object.keys(METRICS_BY_DIMENSION) as DimensionName[]) {
     const metrics = METRICS_BY_DIMENSION[dimension].map((metric) => {
       const simplifiedKey = metric.key.replace(/-current$/, '');
-      const value = coverage[simplifiedKey] || 0;
+      const value = simplifiedKey === 'funders' ? funderCoverage : coverage[simplifiedKey] || 0;
 
       return {
         name: metric.name,
@@ -377,7 +316,7 @@ function buildContentTypeMetricDetails(
   return result as DimensionScores;
 }
 
-export function scoreFromSimplifiedCoverage(coverage: Record<string, number>): {
+export function scoreFromSimplifiedCoverage(coverage: Record<string, number>, benchmarked = true): {
   score: number;
   dimensions: { provenance: number; people: number; organizations: number; funding: number; access: number };
   metricDetails: DimensionScores;
@@ -391,10 +330,13 @@ export function scoreFromSimplifiedCoverage(coverage: Record<string, number>): {
   const people = Math.round((coverage['orcids'] || 0) * 100);
 
   const affVal = coverage['affiliations'] || 0;
-  const rorVal = coverage['ror-ids'] || 0;
+  const rorVal = coverage['affiliation-ror-ids'] || 0;
   const organizations = Math.round((affVal * 5 + rorVal * 10) / 15 * 100);
 
-  const funVal = coverage['funders'] || 0;
+  // Unsupported schemas retain legacy diagnostic fields only; their numeric
+  // placeholders are never exposed as benchmark scores or included in ranks.
+  const funVal = benchmarked ? fundingCoverage(coverage) : coverage.funders || 0;
+  if (funVal === null) throw new Error('Funding identifier overlap is not resolved; collect the disjoint ROR cohort before scoring.');
   const awardVal = coverage['award-numbers'] || 0;
   const funding = Math.round((funVal * 10 + awardVal * 10) / 20 * 100);
 
@@ -416,7 +358,7 @@ export function scoreFromSimplifiedCoverage(coverage: Record<string, number>): {
   return {
     score,
     dimensions,
-    metricDetails: buildContentTypeMetricDetails(coverage, dimensions),
+    metricDetails: buildContentTypeMetricDetails(coverage, dimensions, funVal),
   };
 }
 
@@ -434,6 +376,10 @@ function getEraCoverage(
   // coverage-type entries use simplified field names (e.g., "abstracts" not "abstracts-current")
   // which don't match MemberCoverage's era-suffixed keys, so we cast through unknown
   return coverage as unknown as Record<string, number>;
+}
+
+function hasCompleteCoverage(values: Record<string, number>): boolean {
+  return fundingCoverage(values) !== null && Object.keys(SIMPLIFIED_FIELD_MAP).every((key) => Number.isFinite(values[key]) && values[key] >= 0 && values[key] <= 1);
 }
 
 function coverageHasData(cov: Record<string, number>): boolean {
@@ -463,13 +409,14 @@ export function calculateContentTypeScores(
   for (const type of Object.keys(coverageType.all)) {
     const allCov = getEraCoverage(coverageType.all, type);
     if (!allCov) continue;
+    if (isScorableContentType(type) && !hasCompleteCoverage(allCov)) continue;
 
     const worksAll = countsType?.all?.[type];
     const include =
       worksAll !== undefined ? worksAll > 0 : coverageHasData(allCov);
     if (!include) continue;
 
-    const { score, dimensions, metricDetails } = scoreFromSimplifiedCoverage(allCov);
+    const { score, dimensions, metricDetails } = scoreFromSimplifiedCoverage(allCov, isScorableContentType(type));
 
     const entry: ContentTypeScore = {
       type,
@@ -485,13 +432,14 @@ export function calculateContentTypeScores(
     for (const era of ['current', 'backfile'] as const) {
       const eraCov = getEraCoverage(coverageType[era], type);
       if (!eraCov) continue;
+      if (isScorableContentType(type) && !hasCompleteCoverage(eraCov)) continue;
 
       const eraWorks = countsType?.[era]?.[type];
       const eraInclude =
         eraWorks !== undefined ? eraWorks > 0 : coverageHasData(eraCov);
       if (!eraInclude) continue;
 
-      const eraScore = scoreFromSimplifiedCoverage(eraCov);
+      const eraScore = scoreFromSimplifiedCoverage(eraCov, isScorableContentType(type));
       entry[era] = {
         ...eraScore,
         grade: scoreToGrade(eraScore.score),
@@ -522,15 +470,19 @@ function calculateScorableEra(
   if (works === 0) return null;
 
   // Missing coverage is missing data, not observed 0%. Do not manufacture a score.
-  if (included.some(([type]) => !getEraCoverage(coverage as unknown as Record<string, unknown>, type))) {
+  if (included.some(([type]) => {
+    const values = getEraCoverage(coverage as unknown as Record<string, unknown>, type);
+    return !values || !hasCompleteCoverage(values);
+  })) {
     return null;
   }
 
   const weightedCoverage = Object.fromEntries(
-    Object.keys(SIMPLIFIED_FIELD_MAP).map((key) => {
+    [...Object.keys(SIMPLIFIED_FIELD_MAP), 'ror-ids', FUNDING_UNION_FIELD, ...
+      (included.every(([type]) => Number.isFinite((coverage as unknown as Record<string, Record<string, number>>)[type]['funder-ror-ids'])) ? ['funder-ror-ids'] : [])].map((key) => {
       const numerator = included.reduce((sum, [type, count]) => {
         const typeCoverage = getEraCoverage(coverage as unknown as Record<string, unknown>, type)!;
-        return sum + (typeCoverage[key] ?? 0) * count;
+        return sum + (key === FUNDING_UNION_FIELD ? fundingCoverage(typeCoverage)! : typeCoverage[key] ?? 0) * count;
       }, 0);
       return [key, numerator / works];
     })

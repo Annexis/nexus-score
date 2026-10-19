@@ -5,7 +5,13 @@ each month at 06:00 UTC and can also be run manually. It fetches Crossref member
 coverage, generates both benchmark snapshots, commits them to the default
 branch, triggers a production deployment, and waits for the public dashboard.
 The job succeeds only when both Overall and Current API responses match the
-committed snapshot timestamps and publisher counts.
+committed snapshot timestamps, publisher counts, and methodology version.
+Snapshots from different dates or methodologies are rejected before deployment.
+
+Benchmark Insights reads those same snapshots, so a verified refresh also updates
+its counts, averages, era comparisons, dimension summaries, and publisher examples.
+See [benchmark methodology](benchmark-methodology.md) for the supported population,
+publication windows, ROR field mapping, and local cache replay instructions.
 
 The dashboard reads JSON files bundled into its Vercel deployment. A successful
 data commit does not update those deployed files by itself. The workflow uses an
@@ -59,4 +65,5 @@ Run the deployment checks locally with:
 
 ```sh
 node --test apps/web/scripts/deploy-benchmark.test.mjs
+pnpm --filter @nexus-score/core test
 ```

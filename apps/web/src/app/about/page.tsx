@@ -24,13 +24,13 @@ export default function AboutPage() {
       name: 'Organizations',
       key: 'organizations' as const,
       description:
-        'Assesses institutional affiliations and ROR IDs. Clear organizational links support funder compliance, institutional reporting, and collaboration analysis.',
+        'Assesses institutional affiliations and affiliation-specific ROR IDs. Clear organizational links support funder compliance, institutional reporting, and collaboration analysis.',
     },
     {
       name: 'Funding',
       key: 'funding' as const,
       description:
-        'Tracks grant information using the Funder Registry. Funding metadata enables ROI analysis for funders and supports compliance monitoring.',
+        'Tracks funding information and award numbers recorded in Crossref. Legacy funder metadata and funder ROR identifiers receive the same credit, with each work counted once. Funding metadata enables ROI analysis for funders and supports compliance monitoring.',
     },
     {
       name: 'Access',
@@ -165,7 +165,8 @@ export default function AboutPage() {
           <p className="mt-4 text-gray-600">
             The &quot;current&quot; metrics reflect the current calendar year plus the two
             preceding calendar years, while &quot;backfile&quot; covers earlier works. The
-            trend indicator compares these two periods to show improvement or decline.
+            era comparison shows the difference between these publication cohorts;
+            it does not measure change in a publisher over time.
           </p>
         </section>
 

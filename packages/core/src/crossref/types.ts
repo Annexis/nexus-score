@@ -21,6 +21,9 @@ export interface MemberCoverage {
   'update-policies-current': number;
   'resource-links-current': number;
   'ror-ids-current': number;
+  'affiliation-ror-ids-current'?: number;
+  'funder-ror-ids-current'?: number;
+  'funders-including-ror-current'?: number;
 
   // Backfile = published before the three-year current window
   'affiliations-backfile': number;
@@ -34,6 +37,25 @@ export interface MemberCoverage {
   'update-policies-backfile': number;
   'resource-links-backfile': number;
   'ror-ids-backfile': number;
+  'affiliation-ror-ids-backfile'?: number;
+  'funder-ror-ids-backfile'?: number;
+  'funders-including-ror-backfile'?: number;
+}
+
+/** Unsuffixed fields returned inside coverage-type. ROR roles are distinct. */
+export interface CoverageFields {
+  [field: string]: number;
+  abstracts: number;
+  affiliations: number;
+  orcids: number;
+  licenses: number;
+  references: number;
+  funders: number;
+  'similarity-checking': number;
+  'award-numbers': number;
+  'ror-ids': number;
+  'update-policies': number;
+  'resource-links': number;
 }
 
 /**
@@ -46,9 +68,9 @@ export interface CrossrefMember {
   prefixes: MemberPrefix[];
   coverage: MemberCoverage;
   'coverage-type': {
-    all: Record<string, MemberCoverage>;
-    current: Record<string, MemberCoverage>;
-    backfile: Record<string, MemberCoverage>;
+    all: Record<string, CoverageFields>;
+    current: Record<string, CoverageFields>;
+    backfile: Record<string, CoverageFields>;
   };
   counts: {
     'total-dois': number;
@@ -212,6 +234,7 @@ export interface Funder {
   name: string;
   'doi-asserted-by'?: 'publisher' | 'crossref';
   award?: string[];
+  id?: AffiliationId[];
 }
 
 export interface Reference {
@@ -260,6 +283,7 @@ export interface CrossrefResponse<T> {
 }
 
 export interface SearchResult<T> {
+  'next-cursor'?: string;
   items: T[];
   'total-results': number;
   'items-per-page': number;

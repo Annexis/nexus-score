@@ -22,6 +22,9 @@ interface ApiResponse {
   generatedAt: string; totalMembers: number; total: number; summary: Summary; leaderboard: Entry[];
 }
 interface Props {
+  methodologyCompatible: boolean;
+  methodologyVersion: string;
+  snapshotDate?: string;
   availableContentTypes: { type: string; label: string; count: number; benchmarked: boolean }[];
   initialEra: BenchmarkEra;
   initialContentType: string;
@@ -75,7 +78,7 @@ function SortableHeader({
   );
 }
 
-export function LeaderboardTable({ availableContentTypes, initialEra, initialContentType }: Props) {
+export function LeaderboardTable({ availableContentTypes, initialEra, initialContentType, methodologyCompatible, methodologyVersion, snapshotDate }: Props) {
   const router = useRouter();
   const [era, setEra] = useState<BenchmarkEra>(initialEra);
   const [contentType, setContentType] = useState(initialContentType);
@@ -92,12 +95,11 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [radarEntry, setRadarEntry] = useState<Entry | null>(null);
-  const range = getEraRange();
-  const contentLabel = contentType === 'all' ? 'Legacy All-Record Snapshot' : availableContentTypes.find((entry) => entry.type === contentType)?.label ?? contentType;
+  const range = getEraRange(snapshotDate ? new Date(snapshotDate) : new Date());
+  const contentLabel = contentType === 'all' ? 'All Benchmarked Content Types' : availableContentTypes.find((entry) => entry.type === contentType)?.label ?? contentType;
 
   const updateScopeUrl = (nextEra: BenchmarkEra, nextContentType: string) => {
-    const params = new URLSearchParams({ era: nextEra });
-    if (nextContentType !== 'all') params.set('contentType', nextContentType);
+    const params = new URLSearchParams({ era: nextEra, contentType: nextContentType });
     router.replace(`/leaderboard?${params.toString()}`, { scroll: false });
   };
 
@@ -111,7 +113,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
     const params = new URLSearchParams({
       era,
       contentType,
-      comparisonModel: 'current-v-overall-v2-volume',
+      comparisonModel: methodologyVersion,
       limit: ITEMS_PER_PAGE.toString(),
       offset: ((page - 1) * ITEMS_PER_PAGE).toString(),
       sort,
@@ -134,7 +136,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
     }
     void load();
     return () => controller.abort();
-  }, [contentType, debouncedSearch, direction, era, page, sort]);
+  }, [contentType, debouncedSearch, direction, era, methodologyVersion, page, sort]);
 
   useEffect(() => {
     if (debouncedSearch.length < 2) return;
@@ -164,6 +166,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
 
   return (
     <div>
+      {!methodologyCompatible && <p className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-900">Compatible benchmark snapshots are not available. Regenerate both eras to view these results.</p>}
       <section className="grid grid-cols-2 overflow-hidden rounded-xl border bg-white shadow-sm" aria-label="Benchmark era">
         <button onClick={() => changeEra('current')} className={cn('px-4 py-4 text-left sm:px-6', era === 'current' ? 'bg-blue-600 text-white' : 'hover:bg-blue-50')}>
           <span className="block text-sm font-semibold">Current</span>
@@ -183,7 +186,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
         <div className="flex items-center gap-2">
           <label htmlFor="benchmark-content-type" className="text-sm text-gray-600">Content type</label>
           <select id="benchmark-content-type" value={contentType} onChange={(event) => changeContentType(event.target.value)} className="max-w-64 rounded-lg border border-gray-300 px-3 py-2 text-sm">
-            <option value="all">All Registered Records (legacy)</option>
+            <option value="all">All Benchmarked Content Types</option>
             <optgroup label="Available now">
               {availableContentTypes.filter((entry) => entry.benchmarked).map((entry) => <option key={entry.type} value={entry.type}>{entry.label} ({entry.count.toLocaleString()})</option>)}
             </optgroup>
@@ -197,7 +200,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
       <div className={cn('mt-4 rounded-xl border px-4 py-3 text-sm', contentType === 'all' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-blue-100 bg-blue-50 text-blue-900')}>
         <strong>{contentLabel} - {era === 'overall' ? 'Overall, all years' : `Current, ${range.currentStart}-${range.currentEnd}`}</strong>
         {contentType === 'all' ? (
-          <span className="ml-2">This saved benchmark predates schema-aware aggregation and includes unsupported record types. Use a specific supported content type for valid like-for-like benchmark positions; aggregate benchmark positions are withheld on live publisher profiles until regeneration.</span>
+          <span className="ml-2">Supported Participation Report work types are combined using their work counts. Other record schemas are excluded from the index and remain visible on publisher profiles.</span>
         ) : (
           <span className="ml-2 text-blue-700">
             All statistics and benchmark positions below use this exact supported content type.{' '}
@@ -224,7 +227,7 @@ export function LeaderboardTable({ availableContentTypes, initialEra, initialCon
 
       <div className="mt-5 flex items-center justify-between text-sm text-gray-600">
         <p>{loading ? 'Updating...' : `${resultTotal.toLocaleString()} publishers`}</p>
-        {contentType !== 'all' && <p className="text-xs text-amber-700">Volume adds scale and context to the benchmark. Benchmark positions compare metadata coverage independently of publisher size. Until the refreshed snapshot contains exact per-type counts, rows clearly show publisher-wide volume across all registered types.</p>}
+        <p className="text-xs text-gray-500">Works reflect the selected content type and era. Index values are independent of publisher size.</p>
       </div>
       <p className="mt-2 text-xs text-gray-500"><span aria-hidden="true" className="font-semibold">↕</span> Sortable columns: select once for high-to-low, again for low-to-high, and a third time to restore benchmark order.</p>
       {error && <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}

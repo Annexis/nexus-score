@@ -1,606 +1,100 @@
 #!/usr/bin/env npx tsx
-/**
- * Generate Leaderboard Data
- *
- * This script fetches ALL Crossref members, calculates their Nexus Scores,
- * and saves the results to a JSON file for the leaderboard.
- *
- * Run manually: pnpm --filter web generate-leaderboard
- * Or set up as a cron job / serverless function for periodic updates.
- */
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { CrossrefClient, buildBenchmarkSnapshots, completeFundingCoverage, needsFundingSupplement, type CrossrefMember, type FundingOnlyWork } from '@nexus-score/core';
 
-import { writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-import { rankByScore } from '@nexus-score/core';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Crossref API settings
-const BASE_URL = 'https://api.crossref.org';
-const MAILTO = process.env.CROSSREF_MAILTO || 'varma2friend@gmail.com';
-const ROWS_PER_PAGE = 500; // Crossref can intermittently fail at the 1000-row maximum
-const RATE_LIMIT_DELAY = 100; // ms between requests (polite pool allows faster)
-const MAX_FETCH_RETRIES = 5;
-const RETRY_BASE_DELAY = 1000; // ms
-const RETRY_MAX_DELAY = 30000; // ms
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
-
-interface CrossrefMember {
-  id: number;
-  'primary-name': string;
-  location?: string;
-  counts: {
-    'total-dois': number;
-    'current-dois': number;
-    'backfile-dois': number;
-  };
-  coverage: {
-    'affiliations-current': number;
-    'affiliations-backfile': number;
-    'funders-current': number;
-    'funders-backfile': number;
-    'orcids-current': number;
-    'orcids-backfile': number;
-    'references-current': number;
-    'references-backfile': number;
-    'abstracts-current': number;
-    'abstracts-backfile': number;
-    'licenses-current': number;
-    'licenses-backfile': number;
-    'resource-links-current': number;
-    'resource-links-backfile': number;
-    'open-references-current': number;
-    'open-references-backfile': number;
-    'update-policies-current': number;
-    'update-policies-backfile': number;
-    'similarity-checking-current': number;
-    'similarity-checking-backfile': number;
-    'ror-ids-current': number;
-    'ror-ids-backfile': number;
-    'award-numbers-current': number;
-    'award-numbers-backfile': number;
-  };
-  'coverage-type'?: {
-    all?: Record<string, Record<string, number>>;
-    current?: Record<string, Record<string, number>>;
-    backfile?: Record<string, Record<string, number>>;
-  };
-  'counts-type'?: {
-    all?: Record<string, number>;
-    current?: Record<string, number>;
-    backfile?: Record<string, number>;
-  };
-}
-
-interface DimensionScores {
-  provenance: number;
-  people: number;
-  organizations: number;
-  funding: number;
-  access: number;
-}
-
-interface ContentTypeEntry {
-  type: string;
-  label: string;
-  score: number;
-  grade: string;
-  works?: number;
-}
-
-interface LeaderboardEntry {
-  rank: number;
-  id: number;
-  name: string;
-  location?: string;
-  score: number;
-  grade: string;
-  totalWorks: number;
-  currentScore: number;
-  backfileScore: number | null; // null if no backfile content
-  improvement: number | null; // null if no backfile to compare against
-  dimensions: DimensionScores;
-  currentDimensions: DimensionScores;
-  contentTypes?: ContentTypeEntry[];
-}
-
-interface LeaderboardData {
-  generatedAt: string;
-  totalMembers: number;
-  totalWithWorks: number;
-  availableContentTypes: { type: string; label: string; count: number }[];
-  leaderboard: LeaderboardEntry[];
-}
-
-// Dimension weights (must sum to 100)
-const WEIGHTS = {
-  provenance: 25,
-  people: 20,
-  organizations: 15,
-  funding: 20,
-  access: 20,
-};
-
-const CONTENT_TYPE_LABELS: Record<string, string> = {
-  'journal-article': 'Journal Articles',
-  'posted-content': 'Posted Content',
-  'book-chapter': 'Book Chapters',
-  'proceedings-article': 'Proceedings',
-  'peer-review': 'Peer Reviews',
-  'component': 'Components',
-  'book': 'Books',
-  'dataset': 'Datasets',
-  'monograph': 'Monographs',
-  'edited-book': 'Edited Books',
-  'book-section': 'Book Sections',
-  'reference-book': 'Reference Books',
-  'report': 'Reports',
-  'dissertation': 'Dissertations',
-  'standard': 'Standards',
-  'other': 'Other',
-};
-
-function scoreContentType(cov: Record<string, number>): number {
-  const refVal = cov['references'] || 0;
-  const upVal = cov['update-policies'] || 0;
-  const simVal = cov['similarity-checking'] || 0;
-  const provenance = Math.round((refVal * 15 + upVal * 5 + simVal * 5) / 25 * 100);
-
-  const people = Math.round((cov['orcids'] || 0) * 100);
-
-  const affVal = cov['affiliations'] || 0;
-  const rorVal = cov['ror-ids'] || 0;
-  const organizations = Math.round((affVal * 5 + rorVal * 10) / 15 * 100);
-
-  const funVal = cov['funders'] || 0;
-  const awardVal = cov['award-numbers'] || 0;
-  const funding = Math.round((funVal * 10 + awardVal * 10) / 20 * 100);
-
-  const licVal = cov['licenses'] || 0;
-  const linkVal = cov['resource-links'] || 0;
-  const absVal = cov['abstracts'] || 0;
-  const access = Math.round((licVal * 7 + linkVal * 7 + absVal * 6) / 20 * 100);
-
-  return Math.round(
-    (provenance * WEIGHTS.provenance +
-      people * WEIGHTS.people +
-      organizations * WEIGHTS.organizations +
-      funding * WEIGHTS.funding +
-      access * WEIGHTS.access) / 100
-  );
-}
-
-function toGrade(score: number): string {
-  if (score >= 80) return 'A';
-  if (score >= 65) return 'B';
-  if (score >= 50) return 'C';
-  if (score >= 35) return 'D';
-  return 'F';
-}
-
-function calculateContentTypes(
-  coverageType: Record<string, Record<string, number>> | undefined,
-  countsType?: Record<string, number>
-): ContentTypeEntry[] {
-  if (!coverageType) return [];
-
-  const results: ContentTypeEntry[] = [];
-
-  for (const [type, coverage] of Object.entries(coverageType)) {
-    if (!coverage || typeof coverage !== 'object') continue;
-
-    // Skip types with no meaningful coverage data
-    const hasAnyData = ['references', 'update-policies', 'similarity-checking',
-      'orcids', 'affiliations', 'ror-ids', 'funders', 'award-numbers',
-      'licenses', 'resource-links', 'abstracts'].some(
-      (key) => typeof coverage[key] === 'number' && coverage[key] > 0
-    );
-    if (!hasAnyData) continue;
-
-    const score = scoreContentType(coverage);
-    results.push({
-      type,
-      label: CONTENT_TYPE_LABELS[type] || type.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-      score,
-      grade: toGrade(score),
-      works: countsType?.[type],
-    });
-  }
-
-  results.sort((a, b) => b.score - a.score);
-  return results;
-}
-
-function calculateScore(member: CrossrefMember): {
-  total: number;
-  grade: string;
-  currentScore: number;
-  backfileScore: number | null;
-  improvement: number | null;
-  dimensions: DimensionScores;
-  currentDimensions: DimensionScores;
-} {
-  const coverage = member.coverage || {};
-  const hasBackfile = (member.counts?.['backfile-dois'] || 0) > 0;
-
-  // Coverage values from Crossref are decimals (0-1), convert to percentages (0-100)
-  const toPercent = (val: number | undefined) => Math.round((val || 0) * 100);
-
-  // Calculate CURRENT dimension percentages
-  // Provenance: references (15pts) + update-policies (5pts) + similarity-checking (5pts) = 25pts
-  const currentReferences = toPercent(coverage['references-current']);
-  const currentUpdatePolicies = toPercent(coverage['update-policies-current']);
-  const currentSimilarityCheck = toPercent(coverage['similarity-checking-current']);
-  const currentProvenance = Math.round((currentReferences * 15 + currentUpdatePolicies * 5 + currentSimilarityCheck * 5) / 25);
-
-  const currentPeople = toPercent(coverage['orcids-current']);
-
-  // Organizations: affiliations (5pts) + ROR IDs (10pts) = 15pts
-  const currentAffiliations = toPercent(coverage['affiliations-current']);
-  const currentRorIds = toPercent(coverage['ror-ids-current']);
-  const currentOrganizations = Math.round((currentAffiliations * 5 + currentRorIds * 10) / 15);
-
-  // Funding: funders (10pts) + award-numbers (10pts) = 20pts
-  const currentFunders = toPercent(coverage['funders-current']);
-  const currentAwardNumbers = toPercent(coverage['award-numbers-current']);
-  const currentFunding = Math.round((currentFunders * 10 + currentAwardNumbers * 10) / 20);
-
-  // Access: licenses (7pts) + resource-links (7pts) + abstracts (6pts) = 20pts
-  const currentAbstracts = toPercent(coverage['abstracts-current']);
-  const currentLicenses = toPercent(coverage['licenses-current']);
-  const currentLinks = toPercent(coverage['resource-links-current']);
-  const currentAccess = Math.round((currentLicenses * 7 + currentLinks * 7 + currentAbstracts * 6) / 20);
-
-  // Calculate BACKFILE dimension percentages
-  const backfileReferences = toPercent(coverage['references-backfile']);
-  const backfileUpdatePolicies = toPercent(coverage['update-policies-backfile']);
-  const backfileSimilarityCheck = toPercent(coverage['similarity-checking-backfile']);
-  const backfileProvenance = Math.round((backfileReferences * 15 + backfileUpdatePolicies * 5 + backfileSimilarityCheck * 5) / 25);
-
-  const backfilePeople = toPercent(coverage['orcids-backfile']);
-
-  const backfileAffiliations = toPercent(coverage['affiliations-backfile']);
-  const backfileRorIds = toPercent(coverage['ror-ids-backfile']);
-  const backfileOrganizations = Math.round((backfileAffiliations * 5 + backfileRorIds * 10) / 15);
-
-  const backfileFunders = toPercent(coverage['funders-backfile']);
-  const backfileAwardNumbers = toPercent(coverage['award-numbers-backfile']);
-  const backfileFunding = Math.round((backfileFunders * 10 + backfileAwardNumbers * 10) / 20);
-
-  const backfileAbstracts = toPercent(coverage['abstracts-backfile']);
-  const backfileLicenses = toPercent(coverage['licenses-backfile']);
-  const backfileLinks = toPercent(coverage['resource-links-backfile']);
-  const backfileAccess = Math.round((backfileLicenses * 7 + backfileLinks * 7 + backfileAbstracts * 6) / 20);
-
-  // Calculate weighted current score
-  const currentScore = Math.round(
-    (currentProvenance * WEIGHTS.provenance +
-      currentPeople * WEIGHTS.people +
-      currentOrganizations * WEIGHTS.organizations +
-      currentFunding * WEIGHTS.funding +
-      currentAccess * WEIGHTS.access) / 100
-  );
-
-  // Calculate weighted backfile score (only if they have backfile content)
-  const backfileScoreValue = Math.round(
-    (backfileProvenance * WEIGHTS.provenance +
-      backfilePeople * WEIGHTS.people +
-      backfileOrganizations * WEIGHTS.organizations +
-      backfileFunding * WEIGHTS.funding +
-      backfileAccess * WEIGHTS.access) / 100
-  );
-
-  // Only set backfile score and improvement if publisher has backfile content
-  const backfileScore = hasBackfile ? backfileScoreValue : null;
-  const improvement = hasBackfile ? currentScore - backfileScoreValue : null;
-
-  // Overall dimensions (average of current and backfile)
-  const provenance = Math.round((currentProvenance + backfileProvenance) / 2);
-  const people = Math.round((currentPeople + backfilePeople) / 2);
-  const organizations = Math.round((currentOrganizations + backfileOrganizations) / 2);
-  const funding = Math.round((currentFunding + backfileFunding) / 2);
-  const access = Math.round((currentAccess + backfileAccess) / 2);
-
-  // Calculate weighted total score (average)
-  const total = Math.round(
-    (provenance * WEIGHTS.provenance +
-      people * WEIGHTS.people +
-      organizations * WEIGHTS.organizations +
-      funding * WEIGHTS.funding +
-      access * WEIGHTS.access) / 100
-  );
-
-  // Determine grade (aligned with core library GRADE_THRESHOLDS)
-  let grade: string;
-  if (total >= 80) grade = 'A';
-  else if (total >= 65) grade = 'B';
-  else if (total >= 50) grade = 'C';
-  else if (total >= 35) grade = 'D';
-  else grade = 'F';
-
-  return {
-    total,
-    grade,
-    currentScore,
-    backfileScore,
-    improvement,
-    dimensions: { provenance, people, organizations, funding, access },
-    currentDimensions: {
-      provenance: currentProvenance,
-      people: currentPeople,
-      organizations: currentOrganizations,
-      funding: currentFunding,
-      access: currentAccess,
-    },
-  };
-}
-
-function getRetryAfterDelay(response: Response): number | null {
-  const retryAfter = response.headers.get('Retry-After');
-  if (!retryAfter) return null;
-
-  const seconds = Number(retryAfter);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-
-  const timestamp = Date.parse(retryAfter);
-  if (Number.isFinite(timestamp)) return Math.max(0, timestamp - Date.now());
-
-  return null;
-}
-
-function getBackoffDelay(attempt: number, response?: Response): number {
-  const retryAfterDelay = response ? getRetryAfterDelay(response) : null;
-  if (retryAfterDelay !== null) return retryAfterDelay;
-
-  const exponentialDelay = RETRY_BASE_DELAY * 2 ** attempt;
-  const jitter = Math.round(Math.random() * 250);
-  return Math.min(RETRY_MAX_DELAY, exponentialDelay + jitter);
-}
-
-async function readErrorBody(response: Response): Promise<string> {
-  try {
-    const body = await response.text();
-    return body ? `: ${body.slice(0, 500)}` : '';
-  } catch {
-    return '';
-  }
-}
-
-async function fetchMembers(offset: number): Promise<{ items: CrossrefMember[]; totalResults: number }> {
-  const url = new URL(`${BASE_URL}/members`);
-  url.searchParams.set('mailto', MAILTO);
-  url.searchParams.set('rows', ROWS_PER_PAGE.toString());
-  url.searchParams.set('offset', offset.toString());
-
-  for (let attempt = 0; attempt <= MAX_FETCH_RETRIES; attempt++) {
-    try {
-      const response = await fetch(url.toString(), {
-        headers: {
-          'User-Agent': `NexusScore/1.0 (mailto:${MAILTO})`,
-          Accept: 'application/json',
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        return {
-          items: data.message.items,
-          totalResults: data.message['total-results'],
-        };
-      }
-
-      const retryable = RETRYABLE_STATUSES.has(response.status);
-      if (!retryable || attempt === MAX_FETCH_RETRIES) {
-        const body = await readErrorBody(response);
-        const error = new Error(
-          `Crossref API error at offset ${offset}: ${response.status} ${response.statusText}${body}`
-        );
-        error.name = retryable ? 'CrossrefRetriesExhaustedError' : 'CrossrefNonRetryableError';
-        throw error;
-      }
-
-      const delay = getBackoffDelay(attempt, response);
-      console.warn(
-        `\n   Crossref returned ${response.status} at offset ${offset}. Retrying ${attempt + 1}/${MAX_FETCH_RETRIES} in ${Math.round(delay / 1000)}s...`
-      );
-      await sleep(delay);
-    } catch (error) {
-      if (error instanceof Error && error.name === 'CrossrefNonRetryableError') {
-        throw error;
-      }
-
-      if (attempt === MAX_FETCH_RETRIES) {
-        throw error;
-      }
-
-      const delay = getBackoffDelay(attempt);
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `\n   Crossref request failed at offset ${offset}: ${message}. Retrying ${attempt + 1}/${MAX_FETCH_RETRIES} in ${Math.round(delay / 1000)}s...`
-      );
-      await sleep(delay);
-    }
-  }
-
-  throw new Error(`Crossref API error at offset ${offset}: retries exhausted`);
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const dataDirectory = join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
+const rows = 500;
 
 async function main() {
-  console.log('🚀 Starting leaderboard generation...');
-  console.log(`📧 Using mailto: ${MAILTO}`);
-
-  const allMembers: CrossrefMember[] = [];
-  let offset = 0;
-  let totalResults = 0;
-
-  // Fetch all members with pagination
-  console.log('\n📥 Fetching all Crossref members...');
-
-  do {
-    const result = await fetchMembers(offset);
-    totalResults = result.totalResults;
-    allMembers.push(...result.items);
-
-    const progress = Math.min(100, Math.round((allMembers.length / totalResults) * 100));
-    process.stdout.write(`\r   Progress: ${allMembers.length}/${totalResults} members (${progress}%)`);
-
-    offset += ROWS_PER_PAGE;
-    await sleep(RATE_LIMIT_DELAY);
-  } while (offset < totalResults);
-
-  console.log('\n✅ Fetched all members!');
-
-  // Filter members with works and calculate scores
-  console.log('\n📊 Calculating scores...');
-
-  const membersWithWorks = allMembers.filter(
-    (m) => m.counts && m.counts['total-dois'] && m.counts['total-dois'] > 0
-  );
-  console.log(`   Members with works: ${membersWithWorks.length}/${allMembers.length}`);
-
-  const scored = membersWithWorks.map((member) => {
-    const score = calculateScore(member);
-    const contentTypes = calculateContentTypes(member['coverage-type']?.all, member['counts-type']?.all);
-    return {
-      id: member.id,
-      name: member['primary-name'],
-      location: member.location,
-      score: score.total,
-      grade: score.grade,
-      totalWorks: member.counts['total-dois'],
-      currentWorks: member.counts['current-dois'],
-      currentScore: score.currentScore,
-      backfileScore: score.backfileScore,
-      improvement: score.improvement,
-      dimensions: score.dimensions,
-      currentDimensions: score.currentDimensions,
-      contentTypes: contentTypes.length > 0 ? contentTypes : undefined,
-      currentContentTypes: calculateContentTypes(member['coverage-type']?.current, member['counts-type']?.current),
-    };
-  });
-
-  // Sort by score and assign standard competition ranks (1, 2, 2, 4).
-  const leaderboard: LeaderboardEntry[] = rankByScore(scored, (entry) => entry.score);
-
-  // Collect available content types across all publishers
-  const contentTypeCounts = new Map<string, { label: string; count: number }>();
-  for (const entry of leaderboard) {
-    if (entry.contentTypes) {
-      for (const ct of entry.contentTypes) {
-        const existing = contentTypeCounts.get(ct.type);
-        if (existing) {
-          existing.count++;
-        } else {
-          contentTypeCounts.set(ct.type, { label: ct.label, count: 1 });
-        }
+  const inputFlag = process.argv.indexOf('--input');
+  let members: CrossrefMember[];
+  let fetchedAt: string;
+  if (inputFlag >= 0) {
+    const path = process.argv[inputFlag + 1];
+    if (!path) throw new Error('--input requires a cached member file path');
+    const bytes = readFileSync(path);
+    const cached = JSON.parse((path.endsWith('.gz') ? gunzipSync(bytes) : bytes).toString('utf8'));
+    if (!Array.isArray(cached.members) || !Number.isFinite(Date.parse(cached.fetchedAt))) throw new Error('Invalid member cache');
+    members = cached.members;
+    fetchedAt = cached.fetchedAt;
+    console.log(`Replaying ${members.length} members collected ${fetchedAt}`);
+  } else {
+    const client = new CrossrefClient();
+    const byId = new Map<number, CrossrefMember>();
+    const cursors = new Set<string>();
+    let cursor = '*';
+    let expected = 0;
+    let duplicate = false;
+    while (true) {
+      if (cursors.has(cursor)) throw new Error('Crossref repeated a cursor; no snapshots were written.');
+      cursors.add(cursor);
+      const page = await client.listMembersPage(cursor, rows);
+      if (!expected) expected = page['total-results'];
+      for (const member of page.items) {
+        if (byId.has(member.id)) duplicate = true;
+        byId.set(member.id, member);
       }
+      console.log(`Fetched ${byId.size}/${expected} members`);
+      if (page.items.length < rows) break;
+      if (!page['next-cursor']) throw new Error('Crossref omitted next-cursor before the end of the collection.');
+      cursor = page['next-cursor'];
     }
-  }
-  const availableContentTypes = Array.from(contentTypeCounts.entries())
-    .map(([type, { label, count }]) => ({ type, label, count }))
-    .sort((a, b) => b.count - a.count);
-
-  // Prepare output data
-  const data: LeaderboardData = {
-    generatedAt: new Date().toISOString(),
-    totalMembers: allMembers.length,
-    totalWithWorks: membersWithWorks.length,
-    availableContentTypes,
-    leaderboard,
-  };
-
-  // Write main leaderboard file
-  const outputPath = join(__dirname, '..', 'data', 'leaderboard.json');
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, JSON.stringify(data, null, 2));
-
-  console.log(`\n💾 Saved to: ${outputPath}`);
-
-  // Generate current-era leaderboard (ranked by currentScore, only active publishers)
-  console.log('\n📊 Generating current-era leaderboard...');
-
-  const currentEra = rankByScore(
-    scored.filter((entry) => entry.currentWorks > 0),
-    (entry) => entry.currentScore
-  ).map((entry) => {
-      let currentGrade: string;
-      if (entry.currentScore >= 80) currentGrade = 'A';
-      else if (entry.currentScore >= 65) currentGrade = 'B';
-      else if (entry.currentScore >= 50) currentGrade = 'C';
-      else if (entry.currentScore >= 35) currentGrade = 'D';
-      else currentGrade = 'F';
-
-      const currentCT = entry.currentContentTypes as ContentTypeEntry[] | undefined;
-      return {
-        rank: entry.rank,
-        id: entry.id,
-        name: entry.name,
-        location: entry.location,
-        score: entry.currentScore,
-        grade: currentGrade,
-        totalWorks: entry.totalWorks,
-        currentWorks: entry.currentWorks,
-        overallScore: entry.score,
-        overallGrade: entry.grade,
-        improvement: entry.improvement,
-        dimensions: entry.currentDimensions,
-        contentTypes: currentCT && currentCT.length > 0 ? currentCT : undefined,
-      };
-    });
-
-  // Collect current-era content type counts
-  const currentContentTypeCounts = new Map<string, { label: string; count: number }>();
-  for (const entry of currentEra) {
-    if (entry.contentTypes) {
-      for (const ct of entry.contentTypes) {
-        const existing = currentContentTypeCounts.get(ct.type);
-        if (existing) {
-          existing.count++;
-        } else {
-          currentContentTypeCounts.set(ct.type, { label: ct.label, count: 1 });
-        }
-      }
+    if (duplicate || byId.size < expected) {
+      throw new Error(`Crossref changed during collection (${byId.size}/${expected}, duplicates: ${duplicate}). Retry; no snapshots were written.`);
     }
+    members = [...byId.values()];
+    fetchedAt = new Date().toISOString();
+    // Private local cache permits repeatable methodology comparisons without
+    // fetching the entire API again. This directory is gitignored.
+    const cacheDirectory = join(dataDirectory, 'internal');
+    mkdirSync(cacheDirectory, { recursive: true });
+    writeFileSync(join(cacheDirectory, 'crossref-members.json.gz'), gzipSync(JSON.stringify({ fetchedAt, members })));
   }
-  const currentAvailableContentTypes = Array.from(currentContentTypeCounts.entries())
-    .map(([type, { label, count }]) => ({ type, label, count }))
-    .sort((a, b) => b.count - a.count);
-
-  const currentData = {
-    generatedAt: new Date().toISOString(),
-    totalMembers: allMembers.length,
-    totalActive: currentEra.length,
-    availableContentTypes: currentAvailableContentTypes,
-    leaderboard: currentEra,
-  };
-
-  const currentOutputPath = join(__dirname, '..', 'data', 'current-leaderboard.json');
-  writeFileSync(currentOutputPath, JSON.stringify(currentData, null, 2));
-
-  console.log(`💾 Saved current-era leaderboard to: ${currentOutputPath}`);
-  console.log(`   Active publishers: ${currentEra.length}`);
-  console.log(`   Top scorer: ${currentEra[0]?.name} (${currentEra[0]?.score} points, Grade ${currentEra[0]?.grade})`);
-  console.log(`\n📈 Leaderboard Stats:`);
-  console.log(`   Total members: ${data.totalMembers}`);
-  console.log(`   Members with works: ${data.totalWithWorks}`);
-  console.log(`   Top scorer: ${leaderboard[0]?.name} (${leaderboard[0]?.score} points, Grade ${leaderboard[0]?.grade})`);
-  console.log(`   Average score: ${Math.round(scored.reduce((sum, e) => sum + e.score, 0) / scored.length)}`);
-
-  // Show top 10
-  console.log(`\n🏆 Top 10 Publishers:`);
-  leaderboard.slice(0, 10).forEach((entry) => {
-    console.log(`   ${entry.rank}. ${entry.name} - ${entry.score} pts (${entry.grade})`);
-  });
-
-  console.log('\n✨ Done!');
+  const memberIds = members.filter(needsFundingSupplement).map((member) => member.id);
+  const fundingFlag = process.argv.indexOf('--funding-input');
+  let funding: { fetchedAt: string; currentYear: number; memberIds: number[]; works: FundingOnlyWork[] };
+  const currentYear = new Date(fetchedAt).getUTCFullYear();
+  if (fundingFlag >= 0) {
+    const path = process.argv[fundingFlag + 1];
+    if (!path) throw new Error('--funding-input requires a funding cache file');
+    const bytes = readFileSync(path);
+    funding = JSON.parse((path.endsWith('.gz') ? gunzipSync(bytes) : bytes).toString('utf8'));
+    if (!Array.isArray(funding.works) || !Array.isArray(funding.memberIds) || funding.currentYear !== currentYear ||
+        !Number.isFinite(Date.parse(funding.fetchedAt)) || memberIds.some((id) => !funding.memberIds.includes(id))) {
+      throw new Error('Funding cache does not cover this member collection and publication window.');
+    }
+  } else {
+    console.log(`Resolving funding overlap for ${memberIds.length} members; other unions are known from /members.`);
+    const works = await new CrossrefClient().getFundingOnlyWorks(memberIds, (count, total) => console.log(`Identifier-only funding batch: ${count}/${total}`));
+    funding = { fetchedAt: new Date().toISOString(), currentYear, memberIds, works };
+    const cacheDirectory = join(dataDirectory, 'internal');
+    mkdirSync(cacheDirectory, { recursive: true });
+    writeFileSync(join(cacheDirectory, 'funding-supplement.json.gz'), gzipSync(JSON.stringify(funding)));
+  }
+  const corrected = completeFundingCoverage(members, funding.works, currentYear);
+  const generatedAt = new Date(Math.max(Date.parse(fetchedAt), Date.parse(funding.fetchedAt))).toISOString();
+  const snapshots = buildBenchmarkSnapshots(corrected, generatedAt);
+  for (const snapshot of [snapshots.overall, snapshots.current]) {
+    snapshot.coverageCollectedAt = fetchedAt;
+    snapshot.fundingCollectedAt = funding.fetchedAt;
+  }
+  if (!snapshots.overall.leaderboard.length || !snapshots.current.leaderboard.length) {
+    throw new Error('No complete supported coverage; refusing to replace benchmark data.');
+  }
+  mkdirSync(dataDirectory, { recursive: true });
+  for (const [name, snapshot] of [['leaderboard', snapshots.overall], ['current-leaderboard', snapshots.current]] as const) {
+    const path = join(dataDirectory, `${name}.json`);
+    writeFileSync(`${path}.tmp`, JSON.stringify(snapshot, null, 2));
+  }
+  // Stage both validated outputs before replacing either saved snapshot.
+  for (const name of ['leaderboard', 'current-leaderboard']) {
+    renameSync(join(dataDirectory, `${name}.json.tmp`), join(dataDirectory, `${name}.json`));
+  }
+  console.log(`Saved ${snapshots.overall.totalWithWorks} overall and ${snapshots.current.totalActive} current publishers.`);
+  console.log(`Methodology: ${snapshots.overall.methodologyVersion}; current ${snapshots.overall.currentStart}–${snapshots.overall.currentEnd}.`);
 }
 
-main().catch((error) => {
-  console.error('❌ Error:', error);
-  process.exit(1);
-});
+main().catch((error) => { console.error(error); process.exitCode = 1; });

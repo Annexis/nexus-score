@@ -38,8 +38,8 @@ interface MemberChangeInsightsProps {
   /** Content-mix shift between eras (aggregate view only) */
   mixShift: MixShiftEntry[];
   /** Era scores for the header, e.g. backfile 43 -> current 18 */
-  currentScore: number;
-  backfileScore: number;
+  currentScore: number | null;
+  backfileScore: number | null;
   /** Per-type era scores for the filtered header */
   perTypeScores: Record<string, { current?: number; backfile?: number; label: string }>;
   aggregateScope?: {
@@ -106,7 +106,7 @@ export function MemberChangeInsights({
   const headerCurrent = filtered ? typeInfo?.current : currentScore;
   const headerBackfile = filtered ? typeInfo?.backfile : backfileScore;
   const headerDelta =
-    headerCurrent !== undefined && headerBackfile !== undefined
+    headerCurrent != null && headerBackfile != null
       ? headerCurrent - headerBackfile
       : null;
 

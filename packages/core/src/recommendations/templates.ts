@@ -45,7 +45,7 @@ export const RECOMMENDATION_TEMPLATES: RecommendationTemplate[] = [
   // ORGANIZATIONS
   {
     id: 'ror-ids',
-    metric: 'ror-ids-current',
+    metric: 'affiliation-ror-ids-current',
     dimension: 'organizations',
     title: 'Add ROR IDs for Affiliations',
     description:
@@ -126,9 +126,9 @@ export const RECOMMENDATION_TEMPLATES: RecommendationTemplate[] = [
     dimension: 'funding',
     title: 'Add Funder Information',
     description:
-      'Include funding acknowledgements with Funder Registry IDs to enable grant-to-output linking and support funder compliance monitoring.',
+      'Include funding acknowledgements, with Open Funder Registry or ROR identifiers where available, to support connections between funding and research outputs. Missing metadata does not establish whether research was funded.',
     howToImprove:
-      'Extract funding information from acknowledgements sections. Use the Funder Registry API to match funder names to DOIs. Include in the <fr:program> element.',
+      'Collect funding statements and award numbers. Identify funders using ROR or Open Funder Registry IDs and include them in Crossref deposits. Do not invent funding for unfunded work.',
     documentationUrl:
       'https://www.crossref.org/documentation/schema-library/markup-guide-metadata-segments/funding-information/',
     targetValue: 0.6,
